@@ -32,9 +32,9 @@ use crate::types::{ConfigError, GlobalWalletConfig, GlobalWalletConfigMembers};
 use crate::util::LoggingConfig;
 
 /// Wallet configuration file name
-pub const WALLET_CONFIG_FILE_NAME: &'static str = "grin-wallet.toml";
-const WALLET_LOG_FILE_NAME: &'static str = "grin-wallet.log";
-const GRIN_HOME: &'static str = ".grin";
+pub const WALLET_CONFIG_FILE_NAME: &'static str = "vcash-wallet.toml";
+const WALLET_LOG_FILE_NAME: &'static str = "vcash-wallet.log";
+const GRIN_HOME: &'static str = ".vcash";
 /// Wallet data directory
 pub const GRIN_WALLET_DIR: &'static str = "wallet_data";
 /// API secret
@@ -111,7 +111,7 @@ pub fn initial_setup_wallet(
 	chain_type: &global::ChainTypes,
 ) -> Result<GlobalWalletConfig, ConfigError> {
 	check_api_secret_file(chain_type)?;
-	// Use config file if current directory if it exists, .grin home otherwise
+	// Use config file if current directory if it exists, .vcash home otherwise
 	if let Some(p) = check_config_current_dir(WALLET_CONFIG_FILE_NAME) {
 		GlobalWalletConfig::new(p.to_str().unwrap())
 	} else {
@@ -163,12 +163,12 @@ impl GlobalWalletConfig {
 		match *chain_type {
 			global::ChainTypes::Mainnet => {}
 			global::ChainTypes::Floonet => {
-				defaults.api_listen_port = 13415;
-				defaults.check_node_api_http_addr = "http://127.0.0.1:13413".to_owned();
+				defaults.api_listen_port = 13515;
+				defaults.check_node_api_http_addr = "http://127.0.0.1:13513".to_owned();
 			}
 			global::ChainTypes::UserTesting => {
-				defaults.api_listen_port = 23415;
-				defaults.check_node_api_http_addr = "http://127.0.0.1:23413".to_owned();
+				defaults.api_listen_port = 23515;
+				defaults.check_node_api_http_addr = "http://127.0.0.1:23513".to_owned();
 			}
 			global::ChainTypes::AutomatedTesting => {
 				panic!("Can't run automated testing directly");

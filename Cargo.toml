@@ -1,18 +1,18 @@
 [package]
-name = "grin_wallet"
+name = "vcash_wallet"
 version = "1.1.0-beta.2"
 authors = ["Grin Developers <mimblewimble@lists.launchpad.net>"]
 description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
-repository = "https://github.com/mimblewimble/grin-wallet"
-keywords = [ "crypto", "grin", "mimblewimble" ]
+repository = "https://github.com/vcashorg/vcash-wallet"
+keywords = ["vcash", "crypto", "grin", "mimblewimble" ]
 readme = "README.md"
 exclude = ["**/*.grin", "**/*.grin2"]
 build = "src/build/build.rs"
 edition = "2018"
 
 [[bin]]
-name = "grin-wallet"
+name = "vcash-wallet"
 path = "src/bin/grin-wallet.rs"
 
 [workspace]

@@ -97,7 +97,7 @@ fn real_main() -> i32 {
 	if !cmd::seed_exists(w.members.as_ref().unwrap().wallet.clone()) {
 		if "init" == args.subcommand().0 || "recover" == args.subcommand().0 {
 		} else {
-			println!("Wallet seed file doesn't exist. Run `grin-wallet init` first");
+			println!("Wallet seed file doesn't exist. Run `vcash-wallet init` first");
 			exit(1);
 		}
 	}

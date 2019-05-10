@@ -1,7 +1,7 @@
-name: grin
+name: Vcash
 version: "1.0.1"
 about: Lightweight implementation of the MimbleWimble protocol.
-author: The Grin Team
+author: The Vcash Team
 
 args:
   - floonet:
@@ -277,13 +277,13 @@ subcommands:
             help: Minimum number of confirmations required for an output to be spendable
             short: c
             long: min_conf
-            default_value: "10"
+            default_value: "1"
             takes_value: true
   - init:
       about: Initialize a new wallet seed file and database
       args:
         - here:
-            help: Create wallet files in the current directory instead of the default ~/.grin directory
+            help: Create wallet files in the current directory instead of the default ~/.vcash directory
             short: h
             long: here
             takes_value: false

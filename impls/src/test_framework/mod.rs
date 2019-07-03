@@ -25,10 +25,10 @@ use crate::libwallet::api_impl::{foreign, owner};
 use crate::libwallet::{
 	BlockFees, CbData, InitTxArgs, NodeClient, WalletBackend, WalletInfo, WalletInst,
 };
-use crate::lmdb_wallet::LMDBBackend;
 use crate::util;
 use crate::util::secp::pedersen;
 use crate::util::Mutex;
+use crate::LMDBBackend;
 use crate::WalletSeed;
 use chrono::Duration;
 use std::sync::Arc;
@@ -70,7 +70,9 @@ fn get_outputs_by_pmmr_index_local(
 		outputs: outputs
 			.2
 			.iter()
-			.map(|x| api::OutputPrintable::from_output(x, chain.clone(), None, true).unwrap())
+			.map(|x| {
+				api::OutputPrintable::from_output(x, chain.clone(), None, true, false).unwrap()
+			})
 			.collect(),
 	}
 }
@@ -207,7 +209,7 @@ where
 		};
 		let slate_i = owner::init_send_tx(&mut *w, args, test_mode)?;
 		let slate = client.send_tx_slate_direct(dest, &slate_i)?;
-		owner::tx_lock_outputs(&mut *w, &slate)?;
+		owner::tx_lock_outputs(&mut *w, &slate, 0)?;
 		let slate = owner::finalize_tx(&mut *w, &slate)?;
 		w.close()?;
 		slate

@@ -25,13 +25,16 @@ use uuid::Uuid;
 
 use crate::blake2::blake2b::Blake2b;
 
-use crate::keychain::{ChildNumber, ExtKeychain, Identifier, Keychain};
+use crate::keychain::{ChildNumber, ExtKeychain, Identifier, Keychain, SwitchCommitmentType};
 use crate::store::{self, option_to_not_found, to_key, to_key_u64};
 
 use crate::core::core::Transaction;
 use crate::core::{global, ser};
-use crate::libwallet::types::*;
-use crate::libwallet::{internal, Error, ErrorKind};
+use crate::libwallet::{check_repair, restore};
+use crate::libwallet::{
+	AcctPathMapping, Context, Error, ErrorKind, NodeClient, OutputData, TxLogEntry, WalletBackend,
+	WalletOutputBatch,
+};
 use crate::util;
 use crate::util::secp::constants::SECRET_KEY_SIZE;
 use crate::util::ZeroingString;
@@ -65,7 +68,7 @@ fn private_ctx_xor_keys<K>(
 where
 	K: Keychain,
 {
-	let root_key = keychain.derive_key(0, &K::root_key_id())?;
+	let root_key = keychain.derive_key(0, &K::root_key_id(), &SwitchCommitmentType::Regular)?;
 
 	// derive XOR values for storing secret values in DB
 	// h(root_key|slate_id|"blind")
@@ -200,7 +203,10 @@ where
 			Ok(None)
 		} else {
 			Ok(Some(util::to_hex(
-				self.keychain().commit(amount, &id)?.0.to_vec(),
+				self.keychain()
+					.commit(amount, &id, &SwitchCommitmentType::Regular)?
+					.0
+					.to_vec(), // TODO: proper support for different switch commitment schemes
 			)))
 		}
 	}
@@ -235,7 +241,7 @@ where
 	}
 
 	fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = OutputData> + 'a> {
-		Box::new(self.db.iter(&[OUTPUT_PREFIX]).unwrap())
+		Box::new(self.db.iter(&[OUTPUT_PREFIX]).unwrap().map(|o| o.1))
 	}
 
 	fn get_tx_log_entry(&self, u: &Uuid) -> Result<Option<TxLogEntry>, Error> {
@@ -244,11 +250,19 @@ where
 	}
 
 	fn tx_log_iter<'a>(&'a self) -> Box<dyn Iterator<Item = TxLogEntry> + 'a> {
-		Box::new(self.db.iter(&[TX_LOG_ENTRY_PREFIX]).unwrap())
+		Box::new(self.db.iter(&[TX_LOG_ENTRY_PREFIX]).unwrap().map(|o| o.1))
 	}
 
-	fn get_private_context(&mut self, slate_id: &[u8]) -> Result<Context, Error> {
-		let ctx_key = to_key(PRIVATE_TX_CONTEXT_PREFIX, &mut slate_id.to_vec());
+	fn get_private_context(
+		&mut self,
+		slate_id: &[u8],
+		participant_id: usize,
+	) -> Result<Context, Error> {
+		let ctx_key = to_key_u64(
+			PRIVATE_TX_CONTEXT_PREFIX,
+			&mut slate_id.to_vec(),
+			participant_id as u64,
+		);
 		let (blind_xor_key, nonce_xor_key) = private_ctx_xor_keys(self.keychain(), slate_id)?;
 
 		let mut ctx: Context = option_to_not_found(
@@ -265,7 +279,12 @@ where
 	}
 
 	fn acct_path_iter<'a>(&'a self) -> Box<dyn Iterator<Item = AcctPathMapping> + 'a> {
-		Box::new(self.db.iter(&[ACCOUNT_PATH_MAPPING_PREFIX]).unwrap())
+		Box::new(
+			self.db
+				.iter(&[ACCOUNT_PATH_MAPPING_PREFIX])
+				.unwrap()
+				.map(|o| o.1),
+		)
 	}
 
 	fn get_acct_path(&self, label: String) -> Result<Option<AcctPathMapping>, Error> {
@@ -346,12 +365,12 @@ where
 	}
 
 	fn restore(&mut self) -> Result<(), Error> {
-		internal::restore::restore(self).context(ErrorKind::Restore)?;
+		restore(self).context(ErrorKind::Restore)?;
 		Ok(())
 	}
 
 	fn check_repair(&mut self, delete_unconfirmed: bool) -> Result<(), Error> {
-		internal::restore::check_repair(self, delete_unconfirmed).context(ErrorKind::Restore)?;
+		check_repair(self, delete_unconfirmed).context(ErrorKind::Restore)?;
 		Ok(())
 	}
 }
@@ -411,7 +430,8 @@ where
 				.as_ref()
 				.unwrap()
 				.iter(&[OUTPUT_PREFIX])
-				.unwrap(),
+				.unwrap()
+				.map(|o| o.1),
 		)
 	}
 
@@ -449,7 +469,8 @@ where
 				.as_ref()
 				.unwrap()
 				.iter(&[TX_LOG_ENTRY_PREFIX])
-				.unwrap(),
+				.unwrap()
+				.map(|o| o.1),
 		)
 	}
 
@@ -518,7 +539,8 @@ where
 				.as_ref()
 				.unwrap()
 				.iter(&[ACCOUNT_PATH_MAPPING_PREFIX])
-				.unwrap(),
+				.unwrap()
+				.map(|o| o.1),
 		)
 	}
 
@@ -527,8 +549,17 @@ where
 		self.save(out.clone())
 	}
 
-	fn save_private_context(&mut self, slate_id: &[u8], ctx: &Context) -> Result<(), Error> {
-		let ctx_key = to_key(PRIVATE_TX_CONTEXT_PREFIX, &mut slate_id.to_vec());
+	fn save_private_context(
+		&mut self,
+		slate_id: &[u8],
+		participant_id: usize,
+		ctx: &Context,
+	) -> Result<(), Error> {
+		let ctx_key = to_key_u64(
+			PRIVATE_TX_CONTEXT_PREFIX,
+			&mut slate_id.to_vec(),
+			participant_id as u64,
+		);
 		let (blind_xor_key, nonce_xor_key) = private_ctx_xor_keys(self.keychain(), slate_id)?;
 
 		let mut s_ctx = ctx.clone();
@@ -545,8 +576,16 @@ where
 		Ok(())
 	}
 
-	fn delete_private_context(&mut self, slate_id: &[u8]) -> Result<(), Error> {
-		let ctx_key = to_key(PRIVATE_TX_CONTEXT_PREFIX, &mut slate_id.to_vec());
+	fn delete_private_context(
+		&mut self,
+		slate_id: &[u8],
+		participant_id: usize,
+	) -> Result<(), Error> {
+		let ctx_key = to_key_u64(
+			PRIVATE_TX_CONTEXT_PREFIX,
+			&mut slate_id.to_vec(),
+			participant_id as u64,
+		);
 		self.db
 			.borrow()
 			.as_ref()

@@ -300,7 +300,7 @@ pub fn send(
 			};
 			if adapter.supports_sync() {
 				slate = adapter.send_tx_sync(&args.dest, &slate)?;
-				api.tx_lock_outputs(&slate)?;
+				api.tx_lock_outputs(&slate, 0)?;
 				if args.method == "self" {
 					controller::foreign_single_use(wallet, |api| {
 						slate = api.receive_tx(&slate, Some(&args.dest), None)?;
@@ -314,7 +314,7 @@ pub fn send(
 				slate = api.finalize_tx(&slate)?;
 			} else {
 				adapter.send_tx_async(&args.dest, &slate)?;
-				api.tx_lock_outputs(&slate)?;
+				api.tx_lock_outputs(&slate, 0)?;
 			}
 			if adapter.supports_sync() {
 				let result = api.post_tx(&slate.tx, args.fluff);
@@ -359,7 +359,7 @@ pub fn receive(
 	let send_tx = format!("{}.response", args.input);
 	adapter.send_tx_async(&send_tx, &slate)?;
 	info!(
-		"Response file {}.response generated, sending it back to the transaction originator.",
+		"Response file {}.response generated, and can be sent back to the transaction originator.",
 		args.input
 	);
 	Ok(())
@@ -462,7 +462,6 @@ pub struct ProcessInvoiceArgs {
 	pub method: String,
 	pub dest: String,
 	pub max_outputs: usize,
-	pub target_slate_version: Option<u16>,
 	pub input: String,
 	pub estimate_selection_strategies: bool,
 }
@@ -504,7 +503,6 @@ pub fn process_invoice(
 				num_change_outputs: 1u32,
 				selection_strategy_is_use_all: args.selection_strategy == "all",
 				message: args.message.clone(),
-				target_slate_version: args.target_slate_version,
 				send_args: None,
 				..Default::default()
 			};
@@ -536,7 +534,7 @@ pub fn process_invoice(
 			};
 			if adapter.supports_sync() {
 				slate = adapter.send_tx_sync(&args.dest, &slate)?;
-				api.tx_lock_outputs(&slate)?;
+				api.tx_lock_outputs(&slate, 0)?;
 				if args.method == "self" {
 					controller::foreign_single_use(wallet, |api| {
 						slate = api.finalize_invoice_tx(&slate)?;
@@ -545,7 +543,7 @@ pub fn process_invoice(
 				}
 			} else {
 				adapter.send_tx_async(&args.dest, &slate)?;
-				api.tx_lock_outputs(&slate)?;
+				api.tx_lock_outputs(&slate, 0)?;
 			}
 		}
 		Ok(())

@@ -181,6 +181,10 @@ pub enum ErrorKind {
 	#[fail(display = "Can't parse slate version")]
 	SlateVersionParse,
 
+	/// Can't serialize slate
+	#[fail(display = "Can't Serialize slate")]
+	SlateSer,
+
 	/// Can't deserialize slate
 	#[fail(display = "Can't Deserialize slate")]
 	SlateDeser,
@@ -188,6 +192,10 @@ pub enum ErrorKind {
 	/// Unknown slate version
 	#[fail(display = "Unknown Slate Version: {}", _0)]
 	SlateVersion(u16),
+
+	/// Compatibility error between incoming slate versions and what's expected
+	#[fail(display = "Compatibility Error: {}", _0)]
+	Compatibility(String),
 
 	/// Other
 	#[fail(display = "Generic error: {}", _0)]

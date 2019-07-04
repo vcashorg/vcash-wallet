@@ -17,8 +17,8 @@
 use crate::api::{self, ApiServer, BasicAuthMiddleware, ResponseFuture, Router, TLSConfig};
 use crate::keychain::Keychain;
 use crate::libwallet::{
-	Error, ErrorKind, NodeClient, NodeVersionInfo, Slate, WalletBackend, CURRENT_SLATE_VERSION,
-	GRIN_BLOCK_HEADER_VERSION,
+	CbData, Error, ErrorKind, NodeClient, NodeVersionInfo, Slate, WalletBackend,
+	CURRENT_SLATE_VERSION, GRIN_BLOCK_HEADER_VERSION,
 };
 use crate::util::to_base64;
 use crate::util::Mutex;
@@ -163,9 +163,13 @@ where
 	C: NodeClient + 'static,
 	K: Keychain + 'static,
 {
+	let api_handler = ForeignAPIHandler::new(wallet.clone());
 	let api_handler_v2 = ForeignAPIHandlerV2::new(wallet);
 
 	let mut router = Router::new();
+	router
+		.add_route("/v1/wallet/foreign/**", Arc::new(api_handler))
+		.map_err(|_| ErrorKind::GenericError("Router failed to add route".to_string()))?;
 
 	router
 		.add_route("/v2/foreign", Arc::new(api_handler_v2))
@@ -265,6 +269,107 @@ where
 	}
 }
 
+/// API Handler/Wrapper for foreign functions
+pub struct ForeignAPIHandler<T: ?Sized, C, K>
+where
+	T: WalletBackend<C, K> + Send + Sync + 'static,
+	C: NodeClient + 'static,
+	K: Keychain + 'static,
+{
+	/// Wallet instance
+	pub wallet: Arc<Mutex<T>>,
+	phantom: PhantomData<K>,
+	phantom_c: PhantomData<C>,
+}
+
+impl<T: ?Sized, C, K> ForeignAPIHandler<T, C, K>
+where
+	T: WalletBackend<C, K> + Send + Sync + 'static,
+	C: NodeClient + 'static,
+	K: Keychain + 'static,
+{
+	/// create a new api handler
+	pub fn new(wallet: Arc<Mutex<T>>) -> ForeignAPIHandler<T, C, K> {
+		ForeignAPIHandler {
+			wallet,
+			phantom: PhantomData,
+			phantom_c: PhantomData,
+		}
+	}
+
+	fn build_coinbase(
+		&self,
+		req: Request<Body>,
+		api: Foreign<T, C, K>,
+	) -> Box<dyn Future<Item = CbData, Error = Error> + Send> {
+		Box::new(parse_body(req).and_then(move |block_fees| api.build_coinbase(&block_fees)))
+	}
+
+	fn receive_tx(
+		&self,
+		req: Request<Body>,
+		api: Foreign<T, C, K>,
+	) -> Box<dyn Future<Item = String, Error = Error> + Send> {
+		Box::new(v1_parse_body(req).and_then(
+			//TODO: No way to insert a message from the params
+			move |slate_str: String| {
+				let slate: Slate = Slate::deserialize_upgrade(&slate_str).unwrap();
+				if let Err(e) = api.verify_slate_messages(&slate) {
+					error!("Error validating participant messages: {}", e);
+					err(e)
+				} else {
+					match api.receive_tx(&slate, None, None) {
+						Ok(s) => ok(serde_json::to_string(&s).unwrap()),
+						Err(e) => {
+							error!("receive_tx: failed with error: {}", e);
+							err(e)
+						}
+					}
+				}
+			},
+		))
+	}
+
+	fn handle_request(&self, req: Request<Body>) -> WalletResponseFuture {
+		let api = Foreign::new(self.wallet.clone(), Some(check_middleware));
+		match req
+			.uri()
+			.path()
+			.trim_end_matches("/")
+			.rsplit("/")
+			.next()
+			.unwrap()
+		{
+			"build_coinbase" => Box::new(
+				self.build_coinbase(req, api)
+					.and_then(|res| ok(json_response(&res))),
+			),
+			"receive_tx" => Box::new(
+				self.receive_tx(req, api)
+					.and_then(|res| ok(json_response_slate(&res))),
+			),
+			_ => Box::new(ok(response(StatusCode::BAD_REQUEST, "unknown action"))),
+		}
+	}
+}
+impl<T: ?Sized, C, K> api::Handler for ForeignAPIHandler<T, C, K>
+where
+	T: WalletBackend<C, K> + Send + Sync + 'static,
+	C: NodeClient + Send + Sync + 'static,
+	K: Keychain + 'static,
+{
+	fn post(&self, req: Request<Body>) -> ResponseFuture {
+		Box::new(self.handle_request(req).and_then(|r| ok(r)).or_else(|e| {
+			error!("Request Error: {:?}", e);
+			ok(create_error_response(e))
+		}))
+	}
+
+	fn options(&self, _req: Request<Body>) -> ResponseFuture {
+		Box::new(ok(create_ok_response("{}")))
+	}
+}
+
 /// V2 API Handler/Wrapper for foreign functions
 pub struct ForeignAPIHandlerV2<T: ?Sized, C, K>
 where
@@ -344,12 +449,35 @@ where
 
 // Utility to serialize a struct into JSON and produce a sensible Response
 // out of it.
-fn _json_response<T>(s: &T) -> Response<Body>
+fn json_response<T>(s: &T) -> Response<Body>
 where
 	T: Serialize,
 {
 	match serde_json::to_string(s) {
 		Ok(json) => response(StatusCode::OK, json),
+		Err(_) => response(StatusCode::INTERNAL_SERVER_ERROR, ""),
+	}
+}
+
+// As above, dealing with stringified slate output
+// from older versions.
+// Older versions are expecting a slate objects, anything from
+// 1.1.0 up is expecting a string
+fn json_response_slate<T>(s: &T) -> Response<Body>
+where
+	T: Serialize,
+{
+	match serde_json::to_string(s) {
+		Ok(mut json) => {
+			if let None = json.find("version_info") {
+				let mut r = json.clone();
+				r.pop();
+				r.remove(0);
+				// again, for backwards slate compat
+				json = r.replace("\\\"", "\"")
+			}
+			response(StatusCode::OK, json)
+		}
 		Err(_) => response(StatusCode::INTERNAL_SERVER_ERROR, ""),
 	}
 }
@@ -424,6 +552,39 @@ where
 				Ok(obj) => ok(obj),
 				Err(e) => {
 					err(ErrorKind::GenericError(format!("Invalid request body: {}", e)).into())
+				}
+			}),
+	)
+}
+
+fn v1_parse_body<T>(req: Request<Body>) -> Box<dyn Future<Item = T, Error = Error> + Send>
+where
+	for<'de> T: Deserialize<'de> + Send + 'static,
+{
+	Box::new(
+		req.into_body()
+			.concat2()
+			.map_err(|_| ErrorKind::GenericError("Failed to read request".to_owned()).into())
+			.and_then(|body| {
+				match serde_json::from_reader(&body.to_vec()[..]) {
+					Ok(obj) => ok(obj),
+					Err(_) => {
+						// try to parse as string instead, for backwards compatibility
+						let replaced_str = String::from_utf8(body.to_vec().clone())
+							.unwrap()
+							.replace("\"", "\\\"");
+						let mut str_vec = replaced_str.as_bytes().to_vec();
+						str_vec.push(0x22);
+						str_vec.insert(0, 0x22);
+						match serde_json::from_reader(&str_vec[..]) {
+							Ok(obj) => ok(obj),
+							Err(e) => err(ErrorKind::GenericError(format!(
+								"Invalid request body: {}",
+								e
+							))
+							.into()),
+						}
+					}
 				}
 			}),
 	)

@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,29 +15,33 @@
 //! Wallet key management functions
 use crate::error::{Error, ErrorKind};
 use crate::grin_keychain::{ChildNumber, ExtKeychain, Identifier, Keychain};
+use crate::grin_util::secp::key::SecretKey;
 use crate::types::{AcctPathMapping, NodeClient, WalletBackend};
 
 /// Get next available key in the wallet for a given parent
-pub fn next_available_key<T: ?Sized, C, K>(wallet: &mut T) -> Result<Identifier, Error>
+pub fn next_available_key<'a, T: ?Sized, C, K>(
+	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
+) -> Result<Identifier, Error>
 where
-	T: WalletBackend<C, K>,
-	C: NodeClient,
-	K: Keychain,
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
 {
-	let child = wallet.next_child()?;
+	let child = wallet.next_child(keychain_mask)?;
 	Ok(child)
 }
 
 /// Retrieve an existing key from a wallet
-pub fn retrieve_existing_key<T: ?Sized, C, K>(
+pub fn retrieve_existing_key<'a, T: ?Sized, C, K>(
 	wallet: &T,
 	key_id: Identifier,
 	mmr_index: Option<u64>,
 ) -> Result<(Identifier, u32), Error>
 where
-	T: WalletBackend<C, K>,
-	C: NodeClient,
-	K: Keychain,
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
 {
 	let existing = wallet.get(&key_id, &mmr_index)?;
 	let key_id = existing.key_id.clone();
@@ -46,21 +50,25 @@ where
 }
 
 /// Returns a list of account to BIP32 path mappings
-pub fn accounts<T: ?Sized, C, K>(wallet: &mut T) -> Result<Vec<AcctPathMapping>, Error>
+pub fn accounts<'a, T: ?Sized, C, K>(wallet: &mut T) -> Result<Vec<AcctPathMapping>, Error>
 where
-	T: WalletBackend<C, K>,
-	C: NodeClient,
-	K: Keychain,
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
 {
 	Ok(wallet.acct_path_iter().collect())
 }
 
 /// Adds an new parent account path with a given label
-pub fn new_acct_path<T: ?Sized, C, K>(wallet: &mut T, label: &str) -> Result<Identifier, Error>
+pub fn new_acct_path<'a, T: ?Sized, C, K>(
+	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
+	label: &str,
+) -> Result<Identifier, Error>
 where
-	T: WalletBackend<C, K>,
-	C: NodeClient,
-	K: Keychain,
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
 {
 	let label = label.to_owned();
 	if let Some(_) = wallet.acct_path_iter().find(|l| l.label == label) {
@@ -90,22 +98,23 @@ where
 		path: return_id.clone(),
 	};
 
-	let mut batch = wallet.batch()?;
+	let mut batch = wallet.batch(keychain_mask)?;
 	batch.save_acct_path(save_path)?;
 	batch.commit()?;
 	Ok(return_id)
 }
 
 /// Adds/sets a particular account path with a given label
-pub fn set_acct_path<T: ?Sized, C, K>(
+pub fn set_acct_path<'a, T: ?Sized, C, K>(
 	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
 	label: &str,
 	path: &Identifier,
 ) -> Result<(), Error>
 where
-	T: WalletBackend<C, K>,
-	C: NodeClient,
-	K: Keychain,
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
 {
 	let label = label.to_owned();
 	let save_path = AcctPathMapping {
@@ -113,7 +122,7 @@ where
 		path: path.clone(),
 	};
 
-	let mut batch = wallet.batch()?;
+	let mut batch = wallet.batch(keychain_mask)?;
 	batch.save_acct_path(save_path)?;
 	batch.commit()?;
 	Ok(())

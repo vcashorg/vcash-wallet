@@ -1,0 +1,9 @@
+{
+	"jsonrpc": "2.0",
+	"method": "open_wallet",
+	"params": {
+		"name": null,
+		"password": "passwoid"
+	},
+	"id": 1
+}

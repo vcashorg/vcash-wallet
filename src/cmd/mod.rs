@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,10 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod config;
 mod wallet;
-mod wallet_args;
-mod wallet_tests;
+pub mod wallet_args;
 
-pub use self::config::config_command_wallet;
-pub use self::wallet::{seed_exists, wallet_command};
+pub use self::wallet::wallet_command;

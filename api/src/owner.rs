@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,20 +14,23 @@
 
 //! Owner API External Definition
 
-use crate::util::Mutex;
 use chrono::prelude::*;
-use std::marker::PhantomData;
-use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::config::{TorConfig, WalletConfig};
 use crate::core::core::Transaction;
-use crate::impls::{HTTPWalletCommAdapter, KeybaseWalletCommAdapter};
+use crate::core::global;
+use crate::impls::create_sender;
 use crate::keychain::{Identifier, Keychain};
 use crate::libwallet::api_impl::owner;
 use crate::libwallet::{
 	AcctPathMapping, Error, ErrorKind, InitTxArgs, IssueInvoiceTxArgs, NodeClient,
-	NodeHeightResult, OutputCommitMapping, Slate, TxLogEntry, WalletBackend, WalletInfo,
+	NodeHeightResult, OutputCommitMapping, Slate, TxLogEntry, WalletInfo, WalletInst,
+	WalletLCProvider,
 };
+use crate::util::secp::key::SecretKey;
+use crate::util::{from_hex, static_secp_instance, LoggingConfig, Mutex, ZeroingString};
+use std::sync::Arc;
 
 /// Main interface into all wallet API functions.
 /// Wallet APIs are split into two seperate blocks of functionality
@@ -43,24 +46,23 @@ use crate::libwallet::{
 /// its operation, then 'close' the wallet (unloading references to the keychain and master
 /// seed).
 
-pub struct Owner<W: ?Sized, C, K>
+pub struct Owner<'a, L, C, K>
 where
-	W: WalletBackend<C, K>,
-	C: NodeClient,
-	K: Keychain,
+	L: WalletLCProvider<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
 {
-	/// A reference-counted mutex to an implementation of the
-	/// [`WalletBackend`](../grin_wallet_libwallet/types/trait.WalletBackend.html) trait.
-	pub wallet: Arc<Mutex<W>>,
+	/// contain all methods to manage the wallet
+	pub wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
 	/// Flag to normalize some output during testing. Can mostly be ignored.
 	pub doctest_mode: bool,
-	phantom: PhantomData<K>,
-	phantom_c: PhantomData<C>,
+	/// Share ECDH key
+	pub shared_key: Arc<Mutex<Option<SecretKey>>>,
 }
 
-impl<W: ?Sized, C, K> Owner<W, C, K>
+impl<'a, L, C, K> Owner<'a, L, C, K>
 where
-	W: WalletBackend<C, K>,
+	L: WalletLCProvider<'a, C, K>,
 	C: NodeClient,
 	K: Keychain,
 {
@@ -92,12 +94,12 @@ where
 	/// use tempfile::tempdir;
 	///
 	/// use std::sync::Arc;
-	/// use util::Mutex;
+	/// use util::{Mutex, ZeroingString};
 	///
 	/// use api::Owner;
 	/// use config::WalletConfig;
-	/// use impls::{HTTPNodeClient, LMDBBackend};
-	/// use libwallet::WalletBackend;
+	/// use impls::{DefaultWalletImpl, DefaultLCProvider, HTTPNodeClient};
+	/// use libwallet::WalletInst;
 	///
 	/// let mut wallet_config = WalletConfig::default();
 	/// # let dir = tempdir().map_err(|e| format!("{:#?}", e)).unwrap();
@@ -110,29 +112,48 @@ where
 	///
 	/// // A NodeClient must first be created to handle communication between
 	/// // the wallet and the node.
-	///
 	/// let node_client = HTTPNodeClient::new(&wallet_config.check_node_api_http_addr, None);
-	/// let mut wallet:Arc<Mutex<WalletBackend<HTTPNodeClient, ExtKeychain>>> =
-	///		Arc::new(Mutex::new(
-	///			LMDBBackend::new(wallet_config.clone(), "", node_client).unwrap()
-	///		));
+	///
+	/// // impls::DefaultWalletImpl is provided for convenience in instantiating the wallet
+	/// // It contains the LMDBBackend, DefaultLCProvider (lifecycle) and ExtKeychain used
+	/// // by the reference wallet implementation.
+	/// // These traits can be replaced with alternative implementations if desired
+	///
+	/// let mut wallet = Box::new(DefaultWalletImpl::<'static, HTTPNodeClient>::new(node_client.clone()).unwrap())
+	///		as Box<WalletInst<'static, DefaultLCProvider<HTTPNodeClient, ExtKeychain>, HTTPNodeClient, ExtKeychain>>;
+	///
+	/// // Wallet LifeCycle Provider provides all functions init wallet and work with seeds, etc...
+	/// let lc = wallet.lc_provider().unwrap();
+	///
+	/// // The top level wallet directory should be set manually (in the reference implementation,
+	/// // this is provided in the WalletConfig)
+	/// let _ = lc.set_top_level_directory(&wallet_config.data_file_dir);
+	///
+	/// // Wallet must be opened with the password (TBD)
+	/// let pw = ZeroingString::from("wallet_password");
+	/// lc.open_wallet(None, pw, false, false);
+	///
+	/// // All wallet functions operate on an Arc::Mutex to allow multithreading where needed
+	/// let mut wallet = Arc::new(Mutex::new(wallet));
 	///
 	/// let api_owner = Owner::new(wallet.clone());
 	/// // .. perform wallet operations
 	///
 	/// ```
 
-	pub fn new(wallet_in: Arc<Mutex<W>>) -> Self {
+	pub fn new(wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>) -> Self {
 		Owner {
-			wallet: wallet_in,
+			wallet_inst,
 			doctest_mode: false,
-			phantom: PhantomData,
-			phantom_c: PhantomData,
+			shared_key: Arc::new(Mutex::new(None)),
 		}
 	}
 
 	/// Returns a list of accounts stored in the wallet (i.e. mappings between
 	/// user-specified labels and BIP32 derivation paths.
+	/// # Arguments
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	///
 	/// # Returns
 	/// * Result Containing:
@@ -152,22 +173,31 @@ where
 	///
 	/// let api_owner = Owner::new(wallet.clone());
 	///
-	/// let result = api_owner.accounts();
+	/// let result = api_owner.accounts(None);
 	///
 	/// if let Ok(accts) = result {
 	///		//...
 	/// }
 	/// ```
 
-	pub fn accounts(&self) -> Result<Vec<AcctPathMapping>, Error> {
-		let mut w = self.wallet.lock();
-		owner::accounts(&mut *w)
+	pub fn accounts(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+	) -> Result<Vec<AcctPathMapping>, Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		// Test keychain mask, to keep API consistent
+		let _ = w.keychain(keychain_mask)?;
+		owner::accounts(&mut **w)
 	}
 
 	/// Creates a new 'account', which is a mapping of a user-specified
 	/// label to a BIP32 path
 	///
 	/// # Arguments
+	///
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	/// * `label` - A human readable label to which to map the new BIP32 Path
 	///
 	/// # Returns
@@ -194,22 +224,29 @@ where
 	///
 	/// let api_owner = Owner::new(wallet.clone());
 	///
-	/// let result = api_owner.create_account_path("account1");
+	/// let result = api_owner.create_account_path(None, "account1");
 	///
 	/// if let Ok(identifier) = result {
 	///		//...
 	/// }
 	/// ```
 
-	pub fn create_account_path(&self, label: &str) -> Result<Identifier, Error> {
-		let mut w = self.wallet.lock();
-		owner::create_account_path(&mut *w, label)
+	pub fn create_account_path(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		label: &str,
+	) -> Result<Identifier, Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		owner::create_account_path(&mut **w, keychain_mask, label)
 	}
 
 	/// Sets the wallet's currently active account. This sets the
 	/// BIP32 parent path used for most key-derivation operations.
 	///
 	/// # Arguments
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	/// * `label` - The human readable label for the account. Accounts can be retrieved via
 	/// the [`account`](struct.Owner.html#method.accounts) method
 	///
@@ -234,22 +271,31 @@ where
 	///
 	/// let api_owner = Owner::new(wallet.clone());
 	///
-	/// let result = api_owner.create_account_path("account1");
+	/// let result = api_owner.create_account_path(None, "account1");
 	///
 	/// if let Ok(identifier) = result {
 	///		// set the account active
-	///		let result2 = api_owner.set_active_account("account1");
+	///		let result2 = api_owner.set_active_account(None, "account1");
 	/// }
 	/// ```
 
-	pub fn set_active_account(&self, label: &str) -> Result<(), Error> {
-		let mut w = self.wallet.lock();
-		owner::set_active_account(&mut *w, label)
+	pub fn set_active_account(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		label: &str,
+	) -> Result<(), Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		// Test keychain mask, to keep API consistent
+		let _ = w.keychain(keychain_mask)?;
+		owner::set_active_account(&mut **w, label)
 	}
 
 	/// Returns a list of outputs from the active account in the wallet.
 	///
 	/// # Arguments
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	/// * `include_spent` - If `true`, outputs that have been marked as 'spent'
 	/// in the wallet will be returned. If `false`, spent outputs will omitted
 	/// from the results.
@@ -282,7 +328,7 @@ where
 	/// let update_from_node = true;
 	/// let tx_id = None;
 	///
-	/// let result = api_owner.retrieve_outputs(show_spent, update_from_node, tx_id);
+	/// let result = api_owner.retrieve_outputs(None, show_spent, update_from_node, tx_id);
 	///
 	/// if let Ok((was_updated, output_mappings)) = result {
 	///		//...
@@ -291,21 +337,28 @@ where
 
 	pub fn retrieve_outputs(
 		&self,
+		keychain_mask: Option<&SecretKey>,
 		include_spent: bool,
 		refresh_from_node: bool,
 		tx_id: Option<u32>,
 	) -> Result<(bool, Vec<OutputCommitMapping>), Error> {
-		let mut w = self.wallet.lock();
-		w.open_with_credentials()?;
-		let res = owner::retrieve_outputs(&mut *w, include_spent, refresh_from_node, tx_id);
-		w.close()?;
-		res
+		let mut w_lock = self.wallet_inst.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		owner::retrieve_outputs(
+			&mut **w,
+			keychain_mask,
+			include_spent,
+			refresh_from_node,
+			tx_id,
+		)
 	}
 
 	/// Returns a list of [Transaction Log Entries](../grin_wallet_libwallet/types/struct.TxLogEntry.html)
 	/// from the active account in the wallet.
 	///
 	/// # Arguments
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	/// * `refresh_from_node` - If true, the wallet will attempt to contact
 	/// a node (via the [`NodeClient`](../grin_wallet_libwallet/types/trait.NodeClient.html)
 	/// provided during wallet instantiation). If `false`, the results will
@@ -335,7 +388,7 @@ where
 	/// let tx_slate_id = None;
 	///
 	/// // Return all TxLogEntries
-	/// let result = api_owner.retrieve_txs(update_from_node, tx_id, tx_slate_id);
+	/// let result = api_owner.retrieve_txs(None, update_from_node, tx_id, tx_slate_id);
 	///
 	/// if let Ok((was_updated, tx_log_entries)) = result {
 	///		//...
@@ -344,13 +397,20 @@ where
 
 	pub fn retrieve_txs(
 		&self,
+		keychain_mask: Option<&SecretKey>,
 		refresh_from_node: bool,
 		tx_id: Option<u32>,
 		tx_slate_id: Option<Uuid>,
 	) -> Result<(bool, Vec<TxLogEntry>), Error> {
-		let mut w = self.wallet.lock();
-		w.open_with_credentials()?;
-		let mut res = owner::retrieve_txs(&mut *w, refresh_from_node, tx_id, tx_slate_id)?;
+		let mut w_lock = self.wallet_inst.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		let mut res = owner::retrieve_txs(
+			&mut **w,
+			keychain_mask,
+			refresh_from_node,
+			tx_id,
+			tx_slate_id,
+		)?;
 		if self.doctest_mode {
 			res.1 = res
 				.1
@@ -362,13 +422,14 @@ where
 				})
 				.collect();
 		}
-		w.close()?;
 		Ok(res)
 	}
 
 	/// Returns summary information from the active account in the wallet.
 	///
 	/// # Arguments
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	/// * `refresh_from_node` - If true, the wallet will attempt to contact
 	/// a node (via the [`NodeClient`](../grin_wallet_libwallet/types/trait.NodeClient.html)
 	/// provided during wallet instantiation). If `false`, the results will
@@ -394,7 +455,7 @@ where
 	/// let minimum_confirmations=10;
 	///
 	/// // Return summary info for active account
-	/// let result = api_owner.retrieve_summary_info(update_from_node, minimum_confirmations);
+	/// let result = api_owner.retrieve_summary_info(None, update_from_node, minimum_confirmations);
 	///
 	/// if let Ok((was_updated, summary_info)) = result {
 	///		//...
@@ -403,14 +464,18 @@ where
 
 	pub fn retrieve_summary_info(
 		&self,
+		keychain_mask: Option<&SecretKey>,
 		refresh_from_node: bool,
 		minimum_confirmations: u64,
 	) -> Result<(bool, WalletInfo), Error> {
-		let mut w = self.wallet.lock();
-		w.open_with_credentials()?;
-		let res = owner::retrieve_summary_info(&mut *w, refresh_from_node, minimum_confirmations);
-		w.close()?;
-		res
+		let mut w_lock = self.wallet_inst.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		owner::retrieve_summary_info(
+			&mut **w,
+			keychain_mask,
+			refresh_from_node,
+			minimum_confirmations,
+		)
 	}
 
 	/// Initiates a new transaction as the sender, creating a new
@@ -437,6 +502,8 @@ where
 	/// the `finalize` field is set.
 	///
 	/// # Arguments
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	/// * `args` - [`InitTxArgs`](../grin_wallet_libwallet/types/struct.InitTxArgs.html),
 	/// transaction initialization arguments. See struct documentation for further detail.
 	///
@@ -475,6 +542,7 @@ where
 	/// 	..Default::default()
 	/// };
 	/// let result = api_owner.init_send_tx(
+	/// 	None,
 	/// 	args,
 	/// );
 	///
@@ -482,45 +550,47 @@ where
 	/// 	// Send slate somehow
 	/// 	// ...
 	/// 	// Lock our outputs if we're happy the slate was (or is being) sent
-	/// 	api_owner.tx_lock_outputs(&slate, 0);
+	/// 	api_owner.tx_lock_outputs(None, &slate, 0);
 	/// }
 	/// ```
 
-	pub fn init_send_tx(&self, args: InitTxArgs) -> Result<Slate, Error> {
+	pub fn init_send_tx(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		args: InitTxArgs,
+	) -> Result<Slate, Error> {
 		let send_args = args.send_args.clone();
 		let mut slate = {
-			let mut w = self.wallet.lock();
-			w.open_with_credentials()?;
-			let slate = owner::init_send_tx(&mut *w, args, self.doctest_mode)?;
-			w.close()?;
-			slate
+			let mut w_lock = self.wallet_inst.lock();
+			let w = w_lock.lc_provider()?.wallet_inst()?;
+			owner::init_send_tx(&mut **w, keychain_mask, args, self.doctest_mode)?
 		};
 		// Helper functionality. If send arguments exist, attempt to send
 		match send_args {
 			Some(sa) => {
+				//TODO: in case of keybase, the response might take 60s and leave the service hanging
 				match sa.method.as_ref() {
-					"http" => {
-						slate = HTTPWalletCommAdapter::new().send_tx_sync(&sa.dest, &slate)?
-					}
-					"keybase" => {
-						//TODO: in case of keybase, the response might take 60s and leave the service hanging
-						slate = KeybaseWalletCommAdapter::new().send_tx_sync(&sa.dest, &slate)?;
-					}
+					"http" | "keybase" => {}
 					_ => {
 						error!("unsupported payment method: {}", sa.method);
 						return Err(ErrorKind::ClientCallback(
 							"unsupported payment method".to_owned(),
-						))?;
+						)
+						.into());
 					}
-				}
-				self.tx_lock_outputs(&slate, 0)?;
+				};
+				//TODO: no TOR just now via this method, to keep compatibility for now
+				let comm_adapter = create_sender(&sa.method, &sa.dest, None)
+					.map_err(|e| ErrorKind::GenericError(format!("{}", e)))?;
+				slate = comm_adapter.send_tx(&slate)?;
+				self.tx_lock_outputs(keychain_mask, &slate, 0)?;
 				let slate = match sa.finalize {
-					true => self.finalize_tx(&slate)?,
+					true => self.finalize_tx(keychain_mask, &slate)?,
 					false => slate,
 				};
 
 				if sa.post_tx {
-					self.post_tx(&slate.tx, sa.fluff)?;
+					self.post_tx(keychain_mask, &slate.tx, sa.fluff)?;
 				}
 				Ok(slate)
 			}
@@ -535,6 +605,8 @@ where
 	/// via the [Foreign API's `finalize_invoice_tx`](struct.Foreign.html#method.finalize_invoice_tx) method.
 	///
 	/// # Arguments
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	/// * `args` - [`IssueInvoiceTxArgs`](../grin_wallet_libwallet/types/struct.IssueInvoiceTxArgs.html),
 	/// invoice transaction initialization arguments. See struct documentation for further detail.
 	///
@@ -554,19 +626,21 @@ where
 	/// 	amount: 60_000_000_000,
 	/// 	..Default::default()
 	/// };
-	/// let result = api_owner.issue_invoice_tx(args);
+	/// let result = api_owner.issue_invoice_tx(None, args);
 	///
 	/// if let Ok(slate) = result {
 	///		// if okay, send to the payer to add their inputs
 	///		// . . .
 	/// }
 	/// ```
-	pub fn issue_invoice_tx(&self, args: IssueInvoiceTxArgs) -> Result<Slate, Error> {
-		let mut w = self.wallet.lock();
-		w.open_with_credentials()?;
-		let slate = owner::issue_invoice_tx(&mut *w, args, self.doctest_mode)?;
-		w.close()?;
-		Ok(slate)
+	pub fn issue_invoice_tx(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		args: IssueInvoiceTxArgs,
+	) -> Result<Slate, Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		owner::issue_invoice_tx(&mut **w, keychain_mask, args, self.doctest_mode)
 	}
 
 	/// Processes an invoice tranaction created by another party, essentially
@@ -584,6 +658,8 @@ where
 	/// via the [`get_stored_tx`](struct.Owner.html#method.get_stored_tx) function.
 	///
 	/// # Arguments
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	/// * `slate` - The transaction [`Slate`](../grin_wallet_libwallet/slate/struct.Slate.html). The
 	/// payer should have filled in round 1 and 2.
 	/// * `args` - [`InitTxArgs`](../grin_wallet_libwallet/types/struct.InitTxArgs.html),
@@ -614,7 +690,7 @@ where
 	///		..Default::default()
 	///	};
 	///
-	/// let result = api_owner.process_invoice_tx(&slate, args);
+	/// let result = api_owner.process_invoice_tx(None, &slate, args);
 	///
 	/// if let Ok(slate) = result {
 	///	// If result okay, send back to the invoicer
@@ -622,12 +698,15 @@ where
 	///	}
 	/// ```
 
-	pub fn process_invoice_tx(&self, slate: &Slate, args: InitTxArgs) -> Result<Slate, Error> {
-		let mut w = self.wallet.lock();
-		w.open_with_credentials()?;
-		let slate = owner::process_invoice_tx(&mut *w, slate, args, self.doctest_mode)?;
-		w.close()?;
-		Ok(slate)
+	pub fn process_invoice_tx(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		slate: &Slate,
+		args: InitTxArgs,
+	) -> Result<Slate, Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		owner::process_invoice_tx(&mut **w, keychain_mask, slate, args, self.doctest_mode)
 	}
 
 	/// Locks the outputs associated with the inputs to the transaction in the given
@@ -644,6 +723,8 @@ where
 	/// and return them to the `Unspent` state.
 	///
 	/// # Arguments
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	/// * `slate` - The transaction [`Slate`](../grin_wallet_libwallet/slate/struct.Slate.html). All
 	/// * `participant_id` - The participant id, generally 0 for the party putting in funds, 1 for the
 	/// party receiving.
@@ -671,6 +752,7 @@ where
 	/// 	..Default::default()
 	/// };
 	/// let result = api_owner.init_send_tx(
+	/// 	None,
 	/// 	args,
 	/// );
 	///
@@ -678,16 +760,19 @@ where
 	///		// Send slate somehow
 	///		// ...
 	///		// Lock our outputs if we're happy the slate was (or is being) sent
-	///		api_owner.tx_lock_outputs(&slate, 0);
+	///		api_owner.tx_lock_outputs(None, &slate, 0);
 	/// }
 	/// ```
 
-	pub fn tx_lock_outputs(&self, slate: &Slate, participant_id: usize) -> Result<(), Error> {
-		let mut w = self.wallet.lock();
-		w.open_with_credentials()?;
-		let res = owner::tx_lock_outputs(&mut *w, slate, participant_id);
-		w.close()?;
-		res
+	pub fn tx_lock_outputs(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		slate: &Slate,
+		participant_id: usize,
+	) -> Result<(), Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		owner::tx_lock_outputs(&mut **w, keychain_mask, slate, participant_id)
 	}
 
 	/// Finalizes a transaction, after all parties
@@ -703,6 +788,8 @@ where
 	/// via the [`get_stored_tx`](struct.Owner.html#method.get_stored_tx) function.
 	///
 	/// # Arguments
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	/// * `slate` - The transaction [`Slate`](../grin_wallet_libwallet/slate/struct.Slate.html). All
 	/// participants must have filled in both rounds, and the sender should have locked their
 	/// outputs (via the [`tx_lock_outputs`](struct.Owner.html#method.tx_lock_outputs) function).
@@ -729,6 +816,7 @@ where
 	/// 	..Default::default()
 	/// };
 	/// let result = api_owner.init_send_tx(
+	/// 	None,
 	/// 	args,
 	/// );
 	///
@@ -736,30 +824,32 @@ where
 	///		// Send slate somehow
 	///		// ...
 	///		// Lock our outputs if we're happy the slate was (or is being) sent
-	///		let res = api_owner.tx_lock_outputs(&slate, 0);
+	///		let res = api_owner.tx_lock_outputs(None, &slate, 0);
 	///		//
 	///		// Retrieve slate back from recipient
 	///		//
-	///		let res = api_owner.finalize_tx(&slate);
+	///		let res = api_owner.finalize_tx(None, &slate);
 	/// }
 	/// ```
 
-	pub fn finalize_tx(&self, slate: &Slate) -> Result<Slate, Error> {
-		let mut w = self.wallet.lock();
-		let mut slate = slate.clone();
-		w.open_with_credentials()?;
-		slate = owner::finalize_tx(&mut *w, &slate)?;
-		w.close()?;
-		Ok(slate)
+	pub fn finalize_tx(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		slate: &Slate,
+	) -> Result<Slate, Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		owner::finalize_tx(&mut **w, keychain_mask, &slate)
 	}
 
 	/// Posts a completed transaction to the listening node for validation and inclusion in a block
 	/// for mining.
 	///
 	/// # Arguments
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	/// * `tx` - A completed [`Transaction`](../grin_core/core/transaction/struct.Transaction.html),
 	/// typically the `tx` field in the transaction [`Slate`](../grin_wallet_libwallet/slate/struct.Slate.html).
-	///
 	/// * `fluff` - Instruct the node whether to use the Dandelion protocol when posting the
 	/// transaction. If `true`, the node should skip the Dandelion phase and broadcast the
 	/// transaction to all peers immediately. If `false`, the node will follow dandelion logic and
@@ -786,6 +876,7 @@ where
 	/// 	..Default::default()
 	/// };
 	/// let result = api_owner.init_send_tx(
+	/// 	None,
 	/// 	args,
 	/// );
 	///
@@ -793,18 +884,26 @@ where
 	///		// Send slate somehow
 	///		// ...
 	///		// Lock our outputs if we're happy the slate was (or is being) sent
-	///		let res = api_owner.tx_lock_outputs(&slate, 0);
+	///		let res = api_owner.tx_lock_outputs(None, &slate, 0);
 	///		//
 	///		// Retrieve slate back from recipient
 	///		//
-	///		let res = api_owner.finalize_tx(&slate);
-	///		let res = api_owner.post_tx(&slate.tx, true);
+	///		let res = api_owner.finalize_tx(None, &slate);
+	///		let res = api_owner.post_tx(None, &slate.tx, true);
 	/// }
 	/// ```
 
-	pub fn post_tx(&self, tx: &Transaction, fluff: bool) -> Result<(), Error> {
+	pub fn post_tx(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		tx: &Transaction,
+		fluff: bool,
+	) -> Result<(), Error> {
 		let client = {
-			let mut w = self.wallet.lock();
+			let mut w_lock = self.wallet_inst.lock();
+			let w = w_lock.lc_provider()?.wallet_inst()?;
+			// Test keychain mask, to keep API consistent
+			let _ = w.keychain(keychain_mask)?;
 			w.w2n_client().clone()
 		};
 		owner::post_tx(&client, tx, fluff)
@@ -821,6 +920,8 @@ where
 	///
 	/// # Arguments
 	///
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	/// * `tx_id` - If present, cancel by the [`TxLogEntry`](../grin_wallet_libwallet/types/struct.TxLogEntry.html) id
 	/// for the transaction.
 	///
@@ -847,6 +948,7 @@ where
 	/// 	..Default::default()
 	/// };
 	/// let result = api_owner.init_send_tx(
+	/// 	None,
 	/// 	args,
 	/// );
 	///
@@ -854,20 +956,23 @@ where
 	///		// Send slate somehow
 	///		// ...
 	///		// Lock our outputs if we're happy the slate was (or is being) sent
-	///		let res = api_owner.tx_lock_outputs(&slate, 0);
+	///		let res = api_owner.tx_lock_outputs(None, &slate, 0);
 	///		//
 	///		// We didn't get the slate back, or something else went wrong
 	///		//
-	///		let res = api_owner.cancel_tx(None, Some(slate.id.clone()));
+	///		let res = api_owner.cancel_tx(None, None, Some(slate.id.clone()));
 	/// }
 	/// ```
 
-	pub fn cancel_tx(&self, tx_id: Option<u32>, tx_slate_id: Option<Uuid>) -> Result<(), Error> {
-		let mut w = self.wallet.lock();
-		w.open_with_credentials()?;
-		let res = owner::cancel_tx(&mut *w, tx_id, tx_slate_id);
-		w.close()?;
-		res
+	pub fn cancel_tx(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		tx_id: Option<u32>,
+		tx_slate_id: Option<Uuid>,
+	) -> Result<(), Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		owner::cancel_tx(&mut **w, keychain_mask, tx_id, tx_slate_id)
 	}
 
 	/// Retrieves the stored transaction associated with a TxLogEntry. Can be used even after the
@@ -875,6 +980,8 @@ where
 	///
 	/// # Arguments
 	///
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	/// * `tx_log_entry` - A [`TxLogEntry`](../grin_wallet_libwallet/types/struct.TxLogEntry.html)
 	///
 	/// # Returns
@@ -893,18 +1000,25 @@ where
 	/// let tx_slate_id = None;
 	///
 	/// // Return all TxLogEntries
-	/// let result = api_owner.retrieve_txs(update_from_node, tx_id, tx_slate_id);
+	/// let result = api_owner.retrieve_txs(None, update_from_node, tx_id, tx_slate_id);
 	///
 	/// if let Ok((was_updated, tx_log_entries)) = result {
-	///		let stored_tx = api_owner.get_stored_tx(&tx_log_entries[0]).unwrap();
+	///		let stored_tx = api_owner.get_stored_tx(None, &tx_log_entries[0]).unwrap();
 	///		//...
 	/// }
 	/// ```
 
 	// TODO: Should be accepting an id, not an entire entry struct
-	pub fn get_stored_tx(&self, tx_log_entry: &TxLogEntry) -> Result<Option<Transaction>, Error> {
-		let w = self.wallet.lock();
-		owner::get_stored_tx(&*w, tx_log_entry)
+	pub fn get_stored_tx(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		tx_log_entry: &TxLogEntry,
+	) -> Result<Option<Transaction>, Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		// Test keychain mask, to keep API consistent
+		let _ = w.keychain(keychain_mask)?;
+		owner::get_stored_tx(&**w, tx_log_entry)
 	}
 
 	/// Verifies all messages in the slate match their public keys.
@@ -917,6 +1031,8 @@ where
 	///
 	/// # Arguments
 	///
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	/// * `slate` - The transaction [`Slate`](../grin_wallet_libwallet/slate/struct.Slate.html).
 	///
 	/// # Returns
@@ -940,6 +1056,7 @@ where
 	/// 	..Default::default()
 	/// };
 	/// let result = api_owner.init_send_tx(
+	/// 	None,
 	/// 	args,
 	/// );
 	///
@@ -947,14 +1064,24 @@ where
 	///		// Send slate somehow
 	///		// ...
 	///		// Lock our outputs if we're happy the slate was (or is being) sent
-	///		let res = api_owner.tx_lock_outputs(&slate, 0);
+	///		let res = api_owner.tx_lock_outputs(None, &slate, 0);
 	///		//
 	///		// Retrieve slate back from recipient
 	///		//
-	///		let res = api_owner.verify_slate_messages(&slate);
+	///		let res = api_owner.verify_slate_messages(None, &slate);
 	/// }
 	/// ```
-	pub fn verify_slate_messages(&self, slate: &Slate) -> Result<(), Error> {
+	pub fn verify_slate_messages(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		slate: &Slate,
+	) -> Result<(), Error> {
+		{
+			let mut w_lock = self.wallet_inst.lock();
+			let w = w_lock.lc_provider()?.wallet_inst()?;
+			// Test keychain mask, to keep API consistent
+			let _ = w.keychain(keychain_mask)?;
+		}
 		owner::verify_slate_messages(slate)
 	}
 
@@ -973,7 +1100,8 @@ where
 	///
 	/// # Arguments
 	///
-	/// * None
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	///
 	/// # Returns
 	/// * `Ok(())` if successful
@@ -985,18 +1113,17 @@ where
 	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
 	///
 	/// let mut api_owner = Owner::new(wallet.clone());
-	/// let result = api_owner.restore();
+	/// let result = api_owner.restore(None);
 	///
 	/// if let Ok(_) = result {
 	///		// Wallet outputs should be consistent with what's on chain
 	///		// ...
 	/// }
 	/// ```
-	pub fn restore(&self) -> Result<(), Error> {
-		let mut w = self.wallet.lock();
-		w.open_with_credentials()?;
-		let res = owner::restore(&mut *w);
-		w.close()?;
+	pub fn restore(&self, keychain_mask: Option<&SecretKey>) -> Result<(), Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		let res = owner::restore(&mut **w, keychain_mask);
 		res
 	}
 
@@ -1016,6 +1143,8 @@ where
 	///
 	/// # Arguments
 	///
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	/// * `delete_unconfirmed` - if `false`, the check_repair process will be non-destructive, and
 	/// mostly limited to restoring missing outputs. It will leave unconfirmed transaction logs entries
 	/// and unconfirmed outputs intact. If `true`, the process will unlock all locked outputs,
@@ -1037,6 +1166,7 @@ where
 	///
 	/// let mut api_owner = Owner::new(wallet.clone());
 	/// let result = api_owner.check_repair(
+	/// 	None,
 	/// 	false,
 	/// );
 	///
@@ -1046,12 +1176,14 @@ where
 	/// }
 	/// ```
 
-	pub fn check_repair(&self, delete_unconfirmed: bool) -> Result<(), Error> {
-		let mut w = self.wallet.lock();
-		w.open_with_credentials()?;
-		let res = owner::check_repair(&mut *w, delete_unconfirmed);
-		w.close()?;
-		res
+	pub fn check_repair(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		delete_unconfirmed: bool,
+	) -> Result<(), Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		owner::check_repair(&mut **w, keychain_mask, delete_unconfirmed)
 	}
 
 	/// Retrieves the last known height known by the wallet. This is determined as follows:
@@ -1066,7 +1198,8 @@ where
 	///
 	/// # Arguments
 	///
-	/// * None
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
 	///
 	/// # Returns
 	/// * Ok with a  [`NodeHeightResult`](../grin_wallet_libwallet/types/struct.NodeHeightResult.html)
@@ -1080,7 +1213,7 @@ where
 	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
 	///
 	/// let api_owner = Owner::new(wallet.clone());
-	/// let result = api_owner.node_height();
+	/// let result = api_owner.node_height(None);
 	///
 	/// if let Ok(node_height_result) = result {
 	///		if node_height_result.updated_from_node {
@@ -1091,12 +1224,473 @@ where
 	/// }
 	/// ```
 
-	pub fn node_height(&self) -> Result<NodeHeightResult, Error> {
-		let mut w = self.wallet.lock();
-		w.open_with_credentials()?;
-		let res = owner::node_height(&mut *w);
-		w.close()?;
-		res
+	pub fn node_height(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+	) -> Result<NodeHeightResult, Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		// Test keychain mask, to keep API consistent
+		let _ = w.keychain(keychain_mask)?;
+		owner::node_height(&mut **w, keychain_mask)
+	}
+
+	// LIFECYCLE FUNCTIONS
+
+	/// Retrieve the top-level directory for the wallet. This directory should contain the
+	/// `grin-wallet.toml` file and the `wallet_data` directory that contains the wallet
+	/// seed + data files. Future versions of the wallet API will support multiple wallets
+	/// within the top level directory.
+	///
+	/// The top level directory defaults to (in order of precedence):
+	///
+	/// 1) The current directory, from which `grin-wallet` or the main process was run, if it
+	/// contains a `grin-wallet.toml` file.
+	/// 2) ~/.grin/<chaintype>/ otherwise
+	///
+	/// # Arguments
+	///
+	/// * None
+	///
+	/// # Returns
+	/// * Ok with a String value representing the full path to the top level wallet dierctory
+	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
+	///
+	/// # Example
+	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
+	/// ```
+	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
+	///
+	/// let api_owner = Owner::new(wallet.clone());
+	/// let result = api_owner.get_top_level_directory();
+	///
+	/// if let Ok(dir) = result {
+	///		println!("Top level directory is: {}", dir);
+	///		//...
+	/// }
+	/// ```
+
+	pub fn get_top_level_directory(&self) -> Result<String, Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let lc = w_lock.lc_provider()?;
+		if self.doctest_mode {
+			Ok("/doctest/dir".to_owned())
+		} else {
+			lc.get_top_level_directory()
+		}
+	}
+
+	/// Set the top-level directory for the wallet. This directory can be empty, and will be created
+	/// during a subsequent calls to [`create_config`](struct.Owner.html#method.create_config)
+	///
+	/// Set [`get_top_level_directory`](struct.Owner.html#method.get_top_level_directory) for a
+	/// description of the top level directory and default paths.
+	///
+	/// # Arguments
+	///
+	/// * `dir`: The new top-level directory path (either relative to current directory or
+	/// absolute.
+	///
+	/// # Returns
+	/// * Ok if successful
+	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
+	///
+	/// # Example
+	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
+	/// ```
+	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
+	///
+	/// let dir = "path/to/wallet/dir";
+	///
+	/// # let dir = tempdir().map_err(|e| format!("{:#?}", e)).unwrap();
+	/// # let dir = dir
+	/// # 	.path()
+	/// # 	.to_str()
+	/// # 	.ok_or("Failed to convert tmpdir path to string.".to_owned())
+	/// # 	.unwrap();
+	///
+	/// let api_owner = Owner::new(wallet.clone());
+	/// let result = api_owner.set_top_level_directory(dir);
+	///
+	/// if let Ok(dir) = result {
+	///		//...
+	/// }
+	/// ```
+
+	pub fn set_top_level_directory(&self, dir: &str) -> Result<(), Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let lc = w_lock.lc_provider()?;
+		lc.set_top_level_directory(dir)
+	}
+
+	/// Create a `grin-wallet.toml` configuration file in the top-level directory for the
+	/// specified chain type.
+	/// A custom [`WalletConfig`](../grin_wallet_config/types/struct.WalletConfig.html)
+	/// and/or grin `LoggingConfig` may optionally be provided, otherwise defaults will be used.
+	///
+	/// Paths in the configuration file will be updated to reflect the top level directory, so
+	/// path-related values in the optional configuration structs will be ignored.
+	///
+	/// # Arguments
+	///
+	/// * `chain_type`: The chain type to use in creation of the configuration file. This can be
+	///     * `AutomatedTesting`
+	///     * `UserTesting`
+	///     * `Floonet`
+	///     * `Mainnet`
+	///
+	/// # Returns
+	/// * Ok if successful
+	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
+	///
+	/// # Example
+	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
+	/// ```
+	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
+	///
+	/// use grin_core::global::ChainTypes;
+	///
+	/// let dir = "path/to/wallet/dir";
+	///
+	/// # let dir = tempdir().map_err(|e| format!("{:#?}", e)).unwrap();
+	/// # let dir = dir
+	/// # 	.path()
+	/// # 	.to_str()
+	/// # 	.ok_or("Failed to convert tmpdir path to string.".to_owned())
+	/// # 	.unwrap();
+	///
+	/// let api_owner = Owner::new(wallet.clone());
+	/// let _ = api_owner.set_top_level_directory(dir);
+	///
+	/// let result = api_owner.create_config(&ChainTypes::Mainnet, None, None, None);
+	///
+	/// if let Ok(_) = result {
+	///		//...
+	/// }
+	/// ```
+
+	pub fn create_config(
+		&self,
+		chain_type: &global::ChainTypes,
+		wallet_config: Option<WalletConfig>,
+		logging_config: Option<LoggingConfig>,
+		tor_config: Option<TorConfig>,
+	) -> Result<(), Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let lc = w_lock.lc_provider()?;
+		lc.create_config(
+			chain_type,
+			"grin-wallet.toml",
+			wallet_config,
+			logging_config,
+			tor_config,
+		)
+	}
+
+	/// Creates a new wallet seed and empty wallet database in the `wallet_data` directory of
+	/// the top level directory.
+	///
+	/// Paths in the configuration file will be updated to reflect the top level directory, so
+	/// path-related values in the optional configuration structs will be ignored.
+	///
+	/// The wallet files must not already exist, and ~The `grin-wallet.toml` file must exist
+	/// in the top level directory (can be created via a call to
+	/// [`create_config`](struct.Owner.html#method.create_config))
+	///
+	/// # Arguments
+	///
+	/// * `name`: Reserved for future use, use `None` for the time being.
+	/// * `mnemonic`: If present, restore the wallet seed from the given mnemonic instead of creating
+	/// a new random seed.
+	/// * `mnemonic_length`: Desired length of mnemonic in bytes (16 or 32, either 12 or 24 words).
+	/// Use 0 if mnemonic isn't being used.
+	/// * `password`: The password used to encrypt/decrypt the `wallet.seed` file
+	///
+	/// # Returns
+	/// * Ok if successful
+	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
+	///
+	/// # Example
+	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
+	/// ```
+	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
+	///
+	/// use grin_core::global::ChainTypes;
+	///
+	///	// note that the WalletInst struct does not necessarily need to contain an
+	///	// instantiated wallet
+	///
+	/// let dir = "path/to/wallet/dir";
+	///
+	/// # let dir = tempdir().map_err(|e| format!("{:#?}", e)).unwrap();
+	/// # let dir = dir
+	/// # 	.path()
+	/// # 	.to_str()
+	/// # 	.ok_or("Failed to convert tmpdir path to string.".to_owned())
+	/// # 	.unwrap();
+	/// let api_owner = Owner::new(wallet.clone());
+	/// let _ = api_owner.set_top_level_directory(dir);
+	///
+	/// // Create configuration
+	/// let result = api_owner.create_config(&ChainTypes::Mainnet, None, None, None);
+	///
+	///	// create new wallet wirh random seed
+	///	let pw = ZeroingString::from("my_password");
+	/// let result = api_owner.create_wallet(None, None, 0, pw);
+	///
+	/// if let Ok(r) = result {
+	///		//...
+	/// }
+	/// ```
+
+	pub fn create_wallet(
+		&self,
+		name: Option<&str>,
+		mnemonic: Option<ZeroingString>,
+		mnemonic_length: u32,
+		password: ZeroingString,
+	) -> Result<(), Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let lc = w_lock.lc_provider()?;
+		lc.create_wallet(
+			name,
+			mnemonic,
+			mnemonic_length as usize,
+			password,
+			self.doctest_mode,
+		)
+	}
+
+	/// `Opens` a wallet, populating the internal keychain with the encrypted seed, and optionally
+	/// returning a `keychain_mask` token to the caller to provide in all future calls.
+	/// If using a mask, the seed will be stored in-memory XORed against the `keychain_mask`, and
+	/// will not be useable if the mask is not provided.
+	///
+	/// # Arguments
+	///
+	/// * `name`: Reserved for future use, use `None` for the time being.
+	/// * `password`: The password to use to open the wallet
+	/// a new random seed.
+	/// * `use_mask`: Whether to create and return a mask which much be provided in all future
+	/// API calls.
+	///
+	/// # Returns
+	/// * Ok if successful
+	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
+	///
+	/// # Example
+	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
+	/// ```
+	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
+	///
+	/// use grin_core::global::ChainTypes;
+	///
+	///	// note that the WalletInst struct does not necessarily need to contain an
+	///	// instantiated wallet
+	/// let dir = "path/to/wallet/dir";
+	///
+	/// # let dir = tempdir().map_err(|e| format!("{:#?}", e)).unwrap();
+	/// # let dir = dir
+	/// # 	.path()
+	/// # 	.to_str()
+	/// # 	.ok_or("Failed to convert tmpdir path to string.".to_owned())
+	/// # 	.unwrap();
+	/// let api_owner = Owner::new(wallet.clone());
+	/// let _ = api_owner.set_top_level_directory(dir);
+	///
+	/// // Create configuration
+	/// let result = api_owner.create_config(&ChainTypes::Mainnet, None, None, None);
+	///
+	///	// create new wallet wirh random seed
+	///	let pw = ZeroingString::from("my_password");
+	/// let _ = api_owner.create_wallet(None, None, 0, pw.clone());
+	///
+	/// let result = api_owner.open_wallet(None, pw, true);
+	///
+	/// if let Ok(m) = result {
+	///		// use this mask in all subsequent calls
+	///		let mask = m;
+	/// }
+	/// ```
+
+	pub fn open_wallet(
+		&self,
+		name: Option<&str>,
+		password: ZeroingString,
+		use_mask: bool,
+	) -> Result<Option<SecretKey>, Error> {
+		// just return a representative string for doctest mode
+		if self.doctest_mode {
+			let secp_inst = static_secp_instance();
+			let secp = secp_inst.lock();
+			return Ok(Some(SecretKey::from_slice(
+				&secp,
+				&from_hex(
+					"d096b3cb75986b3b13f80b8f5243a9edf0af4c74ac37578c5a12cfb5b59b1868".to_owned(),
+				)
+				.unwrap(),
+			)?));
+		}
+		let mut w_lock = self.wallet_inst.lock();
+		let lc = w_lock.lc_provider()?;
+		lc.open_wallet(name, password, use_mask, self.doctest_mode)
+	}
+
+	/// `Close` a wallet, removing the master seed from memory.
+	///
+	/// # Arguments
+	///
+	/// * `name`: Reserved for future use, use `None` for the time being.
+	///
+	/// # Returns
+	/// * Ok if successful
+	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
+	///
+	/// # Example
+	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
+	/// ```
+	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
+	///
+	/// use grin_core::global::ChainTypes;
+	///
+	///	// Set up as above
+	/// # let api_owner = Owner::new(wallet.clone());
+	///
+	/// let res = api_owner.close_wallet(None);
+	///
+	/// if let Ok(_) = res {
+	///		// ...
+	/// }
+	/// ```
+
+	pub fn close_wallet(&self, name: Option<&str>) -> Result<(), Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let lc = w_lock.lc_provider()?;
+		lc.close_wallet(name)
+	}
+
+	/// Return the BIP39 mnemonic for the given wallet. This function will decrypt
+	/// the wallet's seed file with the given password, and thus does not need the
+	/// wallet to be open.
+	///
+	/// # Arguments
+	///
+	/// * `name`: Reserved for future use, use `None` for the time being.
+	/// * `password`: The password used to encrypt the seed file.
+	///
+	/// # Returns
+	/// * Ok(BIP-39 mneminc) if successful
+	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
+	///
+	/// # Example
+	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
+	/// ```
+	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
+	///
+	/// use grin_core::global::ChainTypes;
+	///
+	///	// Set up as above
+	/// # let api_owner = Owner::new(wallet.clone());
+	///
+	///	let pw = ZeroingString::from("my_password");
+	/// let res = api_owner.get_mnemonic(None, pw);
+	///
+	/// if let Ok(mne) = res {
+	///		// ...
+	/// }
+	/// ```
+	pub fn get_mnemonic(
+		&self,
+		name: Option<&str>,
+		password: ZeroingString,
+	) -> Result<ZeroingString, Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let lc = w_lock.lc_provider()?;
+		lc.get_mnemonic(name, password)
+	}
+
+	/// Changes a wallet's password, meaning the old seed file is decrypted with the old password,
+	/// and a new seed file is created with the same mnemonic and encrypted with the new password.
+	///
+	/// This function temporarily backs up the old seed file until a test-decryption of the new
+	/// file is confirmed to contain the same seed as the original seed file, at which point the
+	/// backup is deleted. If this operation fails for an unknown reason, the backup file will still
+	/// exist in the wallet's data directory encrypted with the old password.
+	///
+	/// # Arguments
+	///
+	/// * `name`: Reserved for future use, use `None` for the time being.
+	/// * `old`: The password used to encrypt the existing seed file (i.e. old password)
+	/// * `new`: The password to be used to encrypt the new seed file
+	///
+	/// # Returns
+	/// * Ok(()) if successful
+	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
+	///
+	/// # Example
+	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
+	/// ```
+	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
+	///
+	/// use grin_core::global::ChainTypes;
+	///
+	///	// Set up as above
+	/// # let api_owner = Owner::new(wallet.clone());
+	///
+	///	let old = ZeroingString::from("my_password");
+	///	let new = ZeroingString::from("new_password");
+	/// let res = api_owner.change_password(None, old, new);
+	///
+	/// if let Ok(mne) = res {
+	///		// ...
+	/// }
+	/// ```
+	pub fn change_password(
+		&self,
+		name: Option<&str>,
+		old: ZeroingString,
+		new: ZeroingString,
+	) -> Result<(), Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let lc = w_lock.lc_provider()?;
+		lc.change_password(name, old, new)
+	}
+
+	/// Deletes a wallet, removing the config file, seed file and all data files.
+	/// Obviously, use with extreme caution and plenty of user warning
+	///
+	/// Highly recommended that the wallet be explicitly closed first via the `close_wallet`
+	/// function.
+	///
+	/// # Arguments
+	///
+	/// * `name`: Reserved for future use, use `None` for the time being.
+	///
+	/// # Returns
+	/// * Ok if successful
+	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
+	///
+	/// # Example
+	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
+	/// ```
+	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
+	///
+	/// use grin_core::global::ChainTypes;
+	///
+	///	// Set up as above
+	/// # let api_owner = Owner::new(wallet.clone());
+	///
+	/// let res = api_owner.delete_wallet(None);
+	///
+	/// if let Ok(_) = res {
+	///		// ...
+	/// }
+	/// ```
+
+	pub fn delete_wallet(&self, name: Option<&str>) -> Result<(), Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let lc = w_lock.lc_provider()?;
+		lc.delete_wallet(name)
 	}
 }
 
@@ -1108,6 +1702,7 @@ macro_rules! doctest_helper_setup_doc_env {
 		use grin_wallet_config as config;
 		use grin_wallet_impls as impls;
 		use grin_wallet_libwallet as libwallet;
+		use grin_wallet_util::grin_core;
 		use grin_wallet_util::grin_keychain as keychain;
 		use grin_wallet_util::grin_util as util;
 
@@ -1115,12 +1710,12 @@ macro_rules! doctest_helper_setup_doc_env {
 		use tempfile::tempdir;
 
 		use std::sync::Arc;
-		use util::Mutex;
+		use util::{Mutex, ZeroingString};
 
-		use api::Owner;
+		use api::{Foreign, Owner};
 		use config::WalletConfig;
-		use impls::{HTTPNodeClient, LMDBBackend, WalletSeed};
-		use libwallet::{InitTxArgs, IssueInvoiceTxArgs, Slate, WalletBackend};
+		use impls::{DefaultLCProvider, DefaultWalletImpl, HTTPNodeClient};
+		use libwallet::{BlockFees, InitTxArgs, IssueInvoiceTxArgs, Slate, WalletInst};
 
 		let dir = tempdir().map_err(|e| format!("{:#?}", e)).unwrap();
 		let dir = dir
@@ -1130,11 +1725,23 @@ macro_rules! doctest_helper_setup_doc_env {
 			.unwrap();
 		let mut wallet_config = WalletConfig::default();
 		wallet_config.data_file_dir = dir.to_owned();
-		let pw = "";
+		let pw = ZeroingString::from("");
 
 		let node_client = HTTPNodeClient::new(&wallet_config.check_node_api_http_addr, None);
-		let mut $wallet: Arc<Mutex<WalletBackend<HTTPNodeClient, ExtKeychain>>> = Arc::new(
-			Mutex::new(LMDBBackend::new(wallet_config.clone(), pw, node_client).unwrap()),
-			);
+		let mut wallet = Box::new(
+			DefaultWalletImpl::<'static, HTTPNodeClient>::new(node_client.clone()).unwrap(),
+			)
+			as Box<
+				WalletInst<
+					'static,
+					DefaultLCProvider<HTTPNodeClient, ExtKeychain>,
+					HTTPNodeClient,
+					ExtKeychain,
+				>,
+				>;
+		let lc = wallet.lc_provider().unwrap();
+		let _ = lc.set_top_level_directory(&wallet_config.data_file_dir);
+		lc.open_wallet(None, pw, false, false);
+		let mut $wallet = Arc::new(Mutex::new(wallet));
 	};
 }

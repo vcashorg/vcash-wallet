@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -65,7 +65,7 @@ impl Default for WalletConfig {
 			api_listen_interface: "127.0.0.1".to_string(),
 			api_listen_port: 3515,
 			owner_api_listen_port: Some(WalletConfig::default_owner_api_listen_port()),
-			api_secret_path: Some(".api_secret".to_string()),
+			api_secret_path: Some(".owner_api_secret".to_string()),
 			node_api_secret_path: Some(".api_secret".to_string()),
 			check_node_api_http_addr: "http://127.0.0.1:3513".to_string(),
 			owner_api_include_foreign: Some(false),
@@ -138,6 +138,26 @@ impl fmt::Display for ConfigError {
 	}
 }
 
+/// Tor configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TorConfig {
+	/// Whether to start tor listener on listener startup (default true)
+	pub use_tor_listener: bool,
+	/// Just the address of the socks proxy for now
+	pub socks_proxy_addr: String,
+	/// Send configuration directory
+	pub send_config_dir: String,
+}
+
+impl Default for TorConfig {
+	fn default() -> TorConfig {
+		TorConfig {
+			use_tor_listener: true,
+			socks_proxy_addr: "127.0.0.1:59050".to_owned(),
+			send_config_dir: ".".into(),
+		}
+	}
+}
 impl From<io::Error> for ConfigError {
 	fn from(error: io::Error) -> ConfigError {
 		ConfigError::FileIOError(
@@ -162,6 +182,8 @@ pub struct GlobalWalletConfigMembers {
 	/// Wallet configuration
 	#[serde(default)]
 	pub wallet: WalletConfig,
+	/// Tor config
+	pub tor: Option<TorConfig>,
 	/// Logging config
 	pub logging: Option<LoggingConfig>,
 }

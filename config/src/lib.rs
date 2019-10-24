@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,4 +31,6 @@ pub mod config;
 pub mod types;
 
 pub use crate::config::{initial_setup_wallet, GRIN_WALLET_DIR, WALLET_CONFIG_FILE_NAME};
-pub use crate::types::{ConfigError, GlobalWalletConfig, WalletConfig};
+pub use crate::types::{
+	ConfigError, GlobalWalletConfig, GlobalWalletConfigMembers, TorConfig, WalletConfig,
+};

@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,14 +20,14 @@ use crate::error::{Error, ErrorKind};
 use crate::grin_core::core::amount_to_hr_string;
 use crate::grin_core::core::committed::Committed;
 use crate::grin_core::core::transaction::{
-	kernel_features, kernel_sig_msg, Input, Output, Transaction, TransactionBody, TxKernel,
-	Weighting,
+	Input, KernelFeatures, Output, Transaction, TransactionBody, TxKernel, Weighting,
 };
 use crate::grin_core::core::verifier_cache::LruVerifierCache;
 use crate::grin_core::libtx::{aggsig, build, proof::ProofBuild, secp_ser, tx_fee};
 use crate::grin_core::map_vec;
 use crate::grin_keychain::{BlindSum, BlindingFactor, Keychain};
 use crate::grin_util::secp::key::{PublicKey, SecretKey};
+use crate::grin_util::secp::pedersen::Commitment;
 use crate::grin_util::secp::Signature;
 use crate::grin_util::{self, secp, RwLock};
 use failure::ResultExt;
@@ -40,10 +40,11 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::slate_versions::v2::{
-	InputV2, OutputV2, ParticipantDataV2, SlateV2, TransactionBodyV2, TransactionV2, TxKernelV2,
-	VersionCompatInfoV2,
+	CoinbaseV2, InputV2, OutputV2, ParticipantDataV2, SlateV2, TransactionBodyV2, TransactionV2,
+	TxKernelV2, VersionCompatInfoV2,
 };
 use crate::slate_versions::{CURRENT_SLATE_VERSION, GRIN_BLOCK_HEADER_VERSION};
+use crate::types::CbData;
 
 /// Public data for each participant in the slate
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -290,11 +291,16 @@ impl Slate {
 	}
 
 	// This is the msg that we will sign as part of the tx kernel.
-	// Currently includes the fee and the lock_height.
+	// If lock_height is 0 then build a plain kernel, otherwise build a height locked kernel.
 	fn msg_to_sign(&self) -> Result<secp::Message, Error> {
-		// Currently we only support interactively creating a tx with a "default" kernel.
-		let features = kernel_features(self.lock_height);
-		let msg = kernel_sig_msg(self.fee, self.lock_height, features)?;
+		let features = match self.lock_height {
+			0 => KernelFeatures::Plain { fee: self.fee },
+			_ => KernelFeatures::HeightLocked {
+				fee: self.fee,
+				lock_height: self.lock_height,
+			},
+		};
+		let msg = features.kernel_sig_msg()?;
 		Ok(msg)
 	}
 
@@ -617,6 +623,25 @@ impl Slate {
 		Ok(final_sig)
 	}
 
+	/// return the final excess
+	pub fn calc_excess<K>(&self, keychain: &K) -> Result<Commitment, Error>
+	where
+		K: Keychain,
+	{
+		let kernel_offset = &self.tx.offset;
+		let tx = self.tx.clone();
+		let overage = tx.fee() as i64;
+		let tx_excess = tx.sum_commitments(overage)?;
+
+		// subtract the kernel_excess (built from kernel_offset)
+		let offset_excess = keychain
+			.secp()
+			.commit(0, kernel_offset.secret_key(&keychain.secp())?)?;
+		Ok(keychain
+			.secp()
+			.commit_sum(vec![tx_excess], vec![offset_excess])?)
+	}
+
 	/// builds a final transaction after the aggregated sig exchange
 	fn finalize_transaction<K>(
 		&mut self,
@@ -626,26 +651,13 @@ impl Slate {
 	where
 		K: Keychain,
 	{
-		let kernel_offset = &self.tx.offset;
-
 		self.check_fees()?;
+		// build the final excess based on final tx and offset
+		let final_excess = self.calc_excess(keychain)?;
+
+		debug!("Final Tx excess: {:?}", final_excess);
 
 		let mut final_tx = self.tx.clone();
-
-		// build the final excess based on final tx and offset
-		let final_excess = {
-			// sum the input/output commitments on the final tx
-			let overage = final_tx.fee() as i64;
-			let tx_excess = final_tx.sum_commitments(overage)?;
-
-			// subtract the kernel_excess (built from kernel_offset)
-			let offset_excess = keychain
-				.secp()
-				.commit(0, kernel_offset.secret_key(&keychain.secp())?)?;
-			keychain
-				.secp()
-				.commit_sum(vec![tx_excess], vec![offset_excess])?
-		};
 
 		// update the tx kernel to reflect the offset excess and sig
 		assert_eq!(final_tx.kernels().len(), 1);
@@ -703,6 +715,17 @@ impl SlateVersionProbe {
 				Some(_) => 1,
 				None => 0,
 			},
+		}
+	}
+}
+
+// Coinbase data to versioned.
+impl From<CbData> for CoinbaseV2 {
+	fn from(cb: CbData) -> CoinbaseV2 {
+		CoinbaseV2 {
+			output: OutputV2::from(&cb.output),
+			kernel: TxKernelV2::from(&cb.kernel),
+			key_id: cb.key_id,
 		}
 	}
 }
@@ -881,19 +904,19 @@ impl From<&Output> for OutputV2 {
 
 impl From<&TxKernel> for TxKernelV2 {
 	fn from(kernel: &TxKernel) -> TxKernelV2 {
-		let TxKernel {
-			features,
-			fee,
-			lock_height,
-			excess,
-			excess_sig,
-		} = *kernel;
+		let (features, fee, lock_height) = match kernel.features {
+			KernelFeatures::Plain { fee } => (CompatKernelFeatures::Plain, fee, 0),
+			KernelFeatures::Coinbase => (CompatKernelFeatures::Coinbase, 0, 0),
+			KernelFeatures::HeightLocked { fee, lock_height } => {
+				(CompatKernelFeatures::HeightLocked, fee, lock_height)
+			}
+		};
 		TxKernelV2 {
 			features,
 			fee,
 			lock_height,
-			excess,
-			excess_sig,
+			excess: kernel.excess,
+			excess_sig: kernel.excess_sig,
 		}
 	}
 }
@@ -1025,19 +1048,23 @@ impl From<&OutputV2> for Output {
 
 impl From<&TxKernelV2> for TxKernel {
 	fn from(kernel: &TxKernelV2) -> TxKernel {
-		let TxKernelV2 {
-			features,
-			fee,
-			lock_height,
-			excess,
-			excess_sig,
-		} = *kernel;
+		let (fee, lock_height) = (kernel.fee, kernel.lock_height);
+		let features = match kernel.features {
+			CompatKernelFeatures::Plain => KernelFeatures::Plain { fee },
+			CompatKernelFeatures::Coinbase => KernelFeatures::Coinbase,
+			CompatKernelFeatures::HeightLocked => KernelFeatures::HeightLocked { fee, lock_height },
+		};
 		TxKernel {
 			features,
-			fee,
-			lock_height,
-			excess,
-			excess_sig,
+			excess: kernel.excess,
+			excess_sig: kernel.excess_sig,
 		}
 	}
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum CompatKernelFeatures {
+	Plain,
+	Coinbase,
+	HeightLocked,
 }

@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -186,6 +186,48 @@ fn comments() -> HashMap<String, String> {
 		"
 #maximum log file size in bytes before performing log rotation
 #comment it to disable log rotation
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"[tor]".to_string(),
+		"
+#########################################
+### TOR CONFIGURATION (Experimental)  ###
+#########################################
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"use_tor_listener".to_string(),
+		"
+#Whether to start tor listener on listener startup (default true)
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"socks_proxy_addr".to_string(),
+		"
+#Address of the running TOR (SOCKS) server
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"socks_proxy_addr".to_string(),
+		"
+# TOR (SOCKS) proxy server address
+"
+		.to_string(),
+	);
+
+	retval.insert(
+		"send_config_dir".to_string(),
+		"
+#Directory to output TOR configuration to when sending
 "
 		.to_string(),
 	);

@@ -22,6 +22,7 @@
 #![deny(unused_mut)]
 #![warn(missing_docs)]
 
+use grin_wallet_config as config;
 use grin_wallet_util::grin_core as core;
 use grin_wallet_util::grin_keychain as keychain;
 use grin_wallet_util::grin_util as util;
@@ -29,6 +30,8 @@ extern crate grin_wallet_impls as impls;
 extern crate grin_wallet_libwallet as libwallet;
 
 extern crate failure_derive;
+#[macro_use]
+extern crate serde_derive;
 extern crate serde_json;
 
 #[macro_use]
@@ -36,13 +39,21 @@ extern crate log;
 
 mod foreign;
 mod foreign_rpc;
+
 mod owner;
 mod owner_rpc;
+mod owner_rpc_s;
+
+mod types;
+
 pub use crate::foreign::{Foreign, ForeignCheckMiddleware, ForeignCheckMiddlewareFn};
 pub use crate::foreign_rpc::ForeignRpc;
 pub use crate::owner::Owner;
 pub use crate::owner_rpc::OwnerRpc;
+pub use crate::owner_rpc_s::OwnerRpcS;
 
 pub use crate::foreign_rpc::foreign_rpc as foreign_rpc_client;
 pub use crate::foreign_rpc::run_doctest_foreign;
 pub use crate::owner_rpc::run_doctest_owner;
+
+pub use types::{ECDHPubkey, EncryptedRequest, EncryptedResponse, EncryptionErrorResponse, Token};

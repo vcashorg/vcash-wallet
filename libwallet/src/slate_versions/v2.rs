@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -35,13 +35,14 @@
 //!    orig_version: u16,
 //!    block_header_version: u16,
 
-use crate::grin_core::core::transaction::{KernelFeatures, OutputFeatures};
+use crate::grin_core::core::transaction::OutputFeatures;
 use crate::grin_core::libtx::secp_ser;
-use crate::grin_keychain::BlindingFactor;
+use crate::grin_keychain::{BlindingFactor, Identifier};
 use crate::grin_util::secp;
 use crate::grin_util::secp::key::PublicKey;
 use crate::grin_util::secp::pedersen::{Commitment, RangeProof};
 use crate::grin_util::secp::Signature;
+use crate::slate::CompatKernelFeatures;
 use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -162,7 +163,7 @@ pub struct OutputV2 {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TxKernelV2 {
 	/// Options for a kernel's structure or use
-	pub features: KernelFeatures,
+	pub features: CompatKernelFeatures,
 	/// Fee originally included in the transaction this proof is for.
 	#[serde(with = "secp_ser::string_or_u64")]
 	pub fee: u64,
@@ -182,4 +183,15 @@ pub struct TxKernelV2 {
 	/// the transaction fee.
 	#[serde(with = "secp_ser::sig_serde")]
 	pub excess_sig: secp::Signature,
+}
+
+/// A mining node requests new coinbase via the foreign api every time a new candidate block is built.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CoinbaseV2 {
+	/// Output
+	pub output: OutputV2,
+	/// Kernel
+	pub kernel: TxKernelV2,
+	/// Key Id
+	pub key_id: Option<Identifier>,
 }

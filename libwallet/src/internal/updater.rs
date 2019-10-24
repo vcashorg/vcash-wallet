@@ -1,4 +1,4 @@
-// Copyright 2018 The Grin Developers
+// Copyright 2019 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,7 +26,9 @@ use crate::grin_core::libtx::proof::ProofBuilder;
 use crate::grin_core::libtx::reward;
 use crate::grin_keychain::{Identifier, Keychain, SwitchCommitmentType};
 use crate::grin_util as util;
+use crate::grin_util::secp::key::SecretKey;
 use crate::grin_util::secp::pedersen;
+use crate::grin_util::static_secp_instance;
 use crate::internal::keys;
 use crate::types::{
 	NodeClient, OutputData, OutputStatus, TxLogEntry, TxLogEntryType, WalletBackend, WalletInfo,
@@ -34,16 +36,17 @@ use crate::types::{
 use crate::{BlockFees, CbData, OutputCommitMapping};
 
 /// Retrieve all of the outputs (doesn't attempt to update from node)
-pub fn retrieve_outputs<T: ?Sized, C, K>(
+pub fn retrieve_outputs<'a, T: ?Sized, C, K>(
 	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
 	show_spent: bool,
 	tx_id: Option<u32>,
 	parent_key_id: Option<&Identifier>,
 ) -> Result<Vec<OutputCommitMapping>, Error>
 where
-	T: WalletBackend<C, K>,
-	C: NodeClient,
-	K: Keychain,
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
 {
 	// just read the wallet here, no need for a write lock
 	let mut outputs = wallet
@@ -68,7 +71,7 @@ where
 	}
 
 	outputs.sort_by_key(|out| out.n_child);
-	let keychain = wallet.keychain().clone();
+	let keychain = wallet.keychain(keychain_mask)?;
 
 	let res = outputs
 		.into_iter()
@@ -87,7 +90,7 @@ where
 
 /// Retrieve all of the transaction entries, or a particular entry
 /// if `parent_key_id` is set, only return entries from that key
-pub fn retrieve_txs<T: ?Sized, C, K>(
+pub fn retrieve_txs<'a, T: ?Sized, C, K>(
 	wallet: &mut T,
 	tx_id: Option<u32>,
 	tx_slate_id: Option<Uuid>,
@@ -95,9 +98,9 @@ pub fn retrieve_txs<T: ?Sized, C, K>(
 	outstanding_only: bool,
 ) -> Result<Vec<TxLogEntry>, Error>
 where
-	T: WalletBackend<C, K>,
-	C: NodeClient,
-	K: Keychain,
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
 {
 	let mut txs: Vec<TxLogEntry> = wallet
 		.tx_log_iter()
@@ -131,36 +134,38 @@ where
 
 /// Refreshes the outputs in a wallet with the latest information
 /// from a node
-pub fn refresh_outputs<T: ?Sized, C, K>(
+pub fn refresh_outputs<'a, T: ?Sized, C, K>(
 	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
 	parent_key_id: &Identifier,
 	update_all: bool,
 ) -> Result<(), Error>
 where
-	T: WalletBackend<C, K>,
-	C: NodeClient,
-	K: Keychain,
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
 {
 	let height = wallet.w2n_client().get_chain_height()?;
-	refresh_output_state(wallet, height, parent_key_id, update_all)?;
+	refresh_output_state(wallet, keychain_mask, height, parent_key_id, update_all)?;
 	Ok(())
 }
 
 /// build a local map of wallet outputs keyed by commit
 /// and a list of outputs we want to query the node for
-pub fn map_wallet_outputs<T: ?Sized, C, K>(
+pub fn map_wallet_outputs<'a, T: ?Sized, C, K>(
 	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
 	parent_key_id: &Identifier,
 	update_all: bool,
 ) -> Result<HashMap<pedersen::Commitment, (Identifier, Option<u64>)>, Error>
 where
-	T: WalletBackend<C, K>,
-	C: NodeClient,
-	K: Keychain,
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
 {
 	let mut wallet_outputs: HashMap<pedersen::Commitment, (Identifier, Option<u64>)> =
 		HashMap::new();
-	let keychain = wallet.keychain().clone();
+	let keychain = wallet.keychain(keychain_mask)?;
 	let unspents: Vec<OutputData> = wallet
 		.iter()
 		.filter(|x| x.root_key_id == *parent_key_id && x.status != OutputStatus::Spent)
@@ -199,18 +204,19 @@ where
 }
 
 /// Cancel transaction and associated outputs
-pub fn cancel_tx_and_outputs<T: ?Sized, C, K>(
+pub fn cancel_tx_and_outputs<'a, T: ?Sized, C, K>(
 	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
 	tx: TxLogEntry,
 	outputs: Vec<OutputData>,
 	parent_key_id: &Identifier,
 ) -> Result<(), Error>
 where
-	T: WalletBackend<C, K>,
-	C: NodeClient,
-	K: Keychain,
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
 {
-	let mut batch = wallet.batch()?;
+	let mut batch = wallet.batch(keychain_mask)?;
 
 	for mut o in outputs {
 		// unlock locked outputs
@@ -235,17 +241,18 @@ where
 }
 
 /// Apply refreshed API output data to the wallet
-pub fn apply_api_outputs<T: ?Sized, C, K>(
+pub fn apply_api_outputs<'a, T: ?Sized, C, K>(
 	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
 	wallet_outputs: &HashMap<pedersen::Commitment, (Identifier, Option<u64>)>,
 	api_outputs: &HashMap<pedersen::Commitment, (String, u64, u64)>,
 	height: u64,
 	parent_key_id: &Identifier,
 ) -> Result<(), Error>
 where
-	T: WalletBackend<C, K>,
-	C: NodeClient,
-	K: Keychain,
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
 {
 	// now for each commit, find the output in the wallet and the corresponding
 	// api output (if it exists) and refresh it in-place in the wallet.
@@ -262,7 +269,7 @@ where
 			warn!("Please wait for sync on node to complete or fork to resolve and try again.");
 			return Ok(());
 		}
-		let mut batch = wallet.batch()?;
+		let mut batch = wallet.batch(keychain_mask)?;
 		for (commit, (id, mmr_index)) in wallet_outputs.iter() {
 			if let Ok(mut output) = batch.get(id, mmr_index) {
 				match api_outputs.get(&commit) {
@@ -279,6 +286,16 @@ where
 							t.amount_credited = output.value;
 							t.amount_debited = 0;
 							t.num_outputs = 1;
+							// calculate kernel excess for coinbase
+							{
+								let secp = static_secp_instance();
+								let secp = secp.lock();
+								let over_commit = secp.commit_value(output.value)?;
+								let excess =
+									secp.commit_sum(vec![commit.clone()], vec![over_commit])?;
+								t.kernel_excess = Some(excess);
+								t.kernel_lookup_min_height = Some(height);
+							}
 							t.update_confirmation_ts();
 							output.tx_log_entry = Some(log_id);
 							batch.save_tx_log_entry(t, &parent_key_id)?;
@@ -315,38 +332,50 @@ where
 
 /// Builds a single api query to retrieve the latest output data from the node.
 /// So we can refresh the local wallet outputs.
-fn refresh_output_state<T: ?Sized, C, K>(
+fn refresh_output_state<'a, T: ?Sized, C, K>(
 	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
 	height: u64,
 	parent_key_id: &Identifier,
 	update_all: bool,
 ) -> Result<(), Error>
 where
-	T: WalletBackend<C, K>,
-	C: NodeClient,
-	K: Keychain,
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
 {
 	debug!("Refreshing wallet outputs");
 
 	// build a local map of wallet outputs keyed by commit
 	// and a list of outputs we want to query the node for
-	let wallet_outputs = map_wallet_outputs(wallet, parent_key_id, update_all)?;
+	let wallet_outputs = map_wallet_outputs(wallet, keychain_mask, parent_key_id, update_all)?;
 
 	let wallet_output_keys = wallet_outputs.keys().map(|commit| commit.clone()).collect();
 
 	let api_outputs = wallet
 		.w2n_client()
 		.get_outputs_from_node(wallet_output_keys)?;
-	apply_api_outputs(wallet, &wallet_outputs, &api_outputs, height, parent_key_id)?;
-	clean_old_unconfirmed(wallet, height)?;
+	apply_api_outputs(
+		wallet,
+		keychain_mask,
+		&wallet_outputs,
+		&api_outputs,
+		height,
+		parent_key_id,
+	)?;
+	clean_old_unconfirmed(wallet, keychain_mask, height)?;
 	Ok(())
 }
 
-fn clean_old_unconfirmed<T: ?Sized, C, K>(wallet: &mut T, height: u64) -> Result<(), Error>
+fn clean_old_unconfirmed<'a, T: ?Sized, C, K>(
+	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
+	height: u64,
+) -> Result<(), Error>
 where
-	T: WalletBackend<C, K>,
-	C: NodeClient,
-	K: Keychain,
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
 {
 	if height < 50 {
 		return Ok(());
@@ -361,7 +390,7 @@ where
 			ids_to_del.push(out.key_id.clone())
 		}
 	}
-	let mut batch = wallet.batch()?;
+	let mut batch = wallet.batch(keychain_mask)?;
 	for id in ids_to_del {
 		batch.delete(&id, &None)?;
 	}
@@ -371,15 +400,15 @@ where
 
 /// Retrieve summary info about the wallet
 /// caller should refresh first if desired
-pub fn retrieve_info<T: ?Sized, C, K>(
+pub fn retrieve_info<'a, T: ?Sized, C, K>(
 	wallet: &mut T,
 	parent_key_id: &Identifier,
 	minimum_confirmations: u64,
 ) -> Result<WalletInfo, Error>
 where
-	T: WalletBackend<C, K>,
-	C: NodeClient,
-	K: Keychain,
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
 {
 	let current_height = wallet.last_confirmed_height()?;
 	let outputs = wallet
@@ -434,17 +463,18 @@ where
 }
 
 /// Build a coinbase output and insert into wallet
-pub fn build_coinbase<T: ?Sized, C, K>(
+pub fn build_coinbase<'a, T: ?Sized, C, K>(
 	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
 	block_fees: &BlockFees,
 	test_mode: bool,
 ) -> Result<CbData, Error>
 where
-	T: WalletBackend<C, K>,
-	C: NodeClient,
-	K: Keychain,
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
 {
-	let (out, kern, block_fees) = receive_coinbase(wallet, block_fees, test_mode)?;
+	let (out, kern, block_fees) = receive_coinbase(wallet, keychain_mask, block_fees, test_mode)?;
 
 	Ok(CbData {
 		output: out,
@@ -455,15 +485,16 @@ where
 
 //TODO: Split up the output creation and the wallet insertion
 /// Build a coinbase output and the corresponding kernel
-pub fn receive_coinbase<T: ?Sized, C, K>(
+pub fn receive_coinbase<'a, T: ?Sized, C, K>(
 	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
 	block_fees: &BlockFees,
 	test_mode: bool,
 ) -> Result<(Output, TxKernel, BlockFees), Error>
 where
-	T: WalletBackend<C, K>,
-	C: NodeClient,
-	K: Keychain,
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
 {
 	let height = block_fees.height;
 	let lock_height = height + global::coinbase_maturity();
@@ -473,16 +504,16 @@ where
 	let key_id = match key_id {
 		Some(key_id) => match keys::retrieve_existing_key(wallet, key_id, None) {
 			Ok(k) => k.0,
-			Err(_) => keys::next_available_key(wallet)?,
+			Err(_) => keys::next_available_key(wallet, keychain_mask)?,
 		},
-		None => keys::next_available_key(wallet)?,
+		None => keys::next_available_key(wallet, keychain_mask)?,
 	};
 
 	{
 		// Now acquire the wallet lock and write the new output.
 		let amount = reward(block_fees.height, block_fees.fees);
-		let commit = wallet.calc_commit_for_cache(amount, &key_id)?;
-		let mut batch = wallet.batch()?;
+		let commit = wallet.calc_commit_for_cache(keychain_mask, amount, &key_id)?;
+		let mut batch = wallet.batch(keychain_mask)?;
 		batch.save(OutputData {
 			root_key_id: parent_key_id,
 			key_id: key_id.clone(),
@@ -510,10 +541,10 @@ where
 
 	debug!("receive_coinbase: {:?}", block_fees);
 
-	let keychain = wallet.keychain();
+	let keychain = wallet.keychain(keychain_mask)?;
 	let (out, kern) = reward::output(
-		keychain,
-		&ProofBuilder::new(keychain),
+		&keychain,
+		&ProofBuilder::new(&keychain),
 		&key_id,
 		block_fees.height,
 		block_fees.fees,

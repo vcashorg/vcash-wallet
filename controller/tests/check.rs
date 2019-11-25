@@ -25,7 +25,7 @@ use self::core::global;
 use grin_wallet_libwallet as libwallet;
 use impls::test_framework::{self, LocalWalletClient};
 use impls::{PathToSlate, SlatePutter as _};
-use libwallet::InitTxArgs;
+use libwallet::{InitTxArgs, NodeClient};
 use std::thread;
 use std::time::Duration;
 use util::ZeroingString;
@@ -47,7 +47,7 @@ macro_rules! wallet_info {
 }
 
 /// Various tests on checking functionality
-fn check_repair_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
+fn scan_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 	// Create a new proxy to simulate server and wallet responses
 	let mut wallet_proxy = create_wallet_proxy(test_dir);
 	let chain = wallet_proxy.chain.clone();
@@ -90,10 +90,10 @@ fn check_repair_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 
 	// add some accounts
 	wallet::controller::owner_single_use(wallet1.clone(), mask1, |api, m| {
-		api.create_account_path(m, "account_1")?;
+		api.create_account_path(m, "named_account_1")?;
 		api.create_account_path(m, "account_2")?;
 		api.create_account_path(m, "account_3")?;
-		api.set_active_account(m, "account_1")?;
+		api.set_active_account(m, "named_account_1")?;
 		Ok(())
 	})?;
 
@@ -156,7 +156,7 @@ fn check_repair_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 
 	// this should restore our missing outputs
 	wallet::controller::owner_single_use(wallet1.clone(), mask1, |api, m| {
-		api.check_repair(m, true)?;
+		api.scan(m, None, true)?;
 		Ok(())
 	})?;
 
@@ -165,6 +165,11 @@ fn check_repair_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 		let (wallet1_refreshed, wallet1_info) = api.retrieve_summary_info(m, true, 1)?;
 		assert!(wallet1_refreshed);
 		assert_eq!(wallet1_info.total, bh * reward);
+		// And check account names haven't been splatted
+		let accounts = api.accounts(m)?;
+		assert_eq!(accounts.len(), 4);
+		assert!(api.set_active_account(m, "account_1").is_err());
+		assert!(api.set_active_account(m, "named_account_1").is_ok());
 		Ok(())
 	})?;
 
@@ -190,14 +195,15 @@ fn check_repair_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 
 	// check we're all locked
 	wallet::controller::owner_single_use(wallet1.clone(), mask1, |api, m| {
-		let (_, wallet1_info) = api.retrieve_summary_info(m, true, 1)?;
+		let (wallet1_refreshed, wallet1_info) = api.retrieve_summary_info(m, true, 1)?;
+		assert!(wallet1_refreshed);
 		assert!(wallet1_info.amount_currently_spendable == 0);
 		Ok(())
 	})?;
 
 	// unlock/restore
 	wallet::controller::owner_single_use(wallet1.clone(), mask1, |api, m| {
-		api.check_repair(m, true)?;
+		api.scan(m, None, true)?;
 		Ok(())
 	})?;
 
@@ -403,7 +409,7 @@ fn two_wallets_one_seed_impl(test_dir: &'static str) -> Result<(), libwallet::Er
 
 	// 0) Check repair when all is okay should leave wallet contents alone
 	wallet::controller::owner_single_use(wallet1.clone(), mask1, |api, m| {
-		api.check_repair(m, true)?;
+		api.scan(m, None, true)?;
 		let info = wallet_info!(wallet1.clone(), m)?;
 		assert_eq!(info.amount_currently_spendable, base_amount * 6);
 		assert_eq!(info.total, base_amount * 6);
@@ -438,20 +444,22 @@ fn two_wallets_one_seed_impl(test_dir: &'static str) -> Result<(), libwallet::Er
 	bh += cm as u64;
 
 	// confirm balances
+	// since info is now performing a partial scan, these should confirm
+	// as containing all outputs
 	let info = wallet_info!(wallet1.clone(), mask1)?;
-	assert_eq!(info.amount_currently_spendable, base_amount * 6);
-	assert_eq!(info.total, base_amount * 6);
+	assert_eq!(info.amount_currently_spendable, base_amount * 21);
+	assert_eq!(info.total, base_amount * 21);
 
 	let info = wallet_info!(wallet2.clone(), mask2)?;
-	assert_eq!(info.amount_currently_spendable, base_amount * 15);
-	assert_eq!(info.total, base_amount * 15);
+	assert_eq!(info.amount_currently_spendable, base_amount * 21);
+	assert_eq!(info.total, base_amount * 21);
 
 	// Now there should be outputs on the chain using the same
 	// seed + BIP32 path.
 
 	// 1) a full restore should recover all of them:
 	wallet::controller::owner_single_use(wallet3.clone(), mask3, |api, m| {
-		api.restore(m)?;
+		api.scan(m, None, false)?;
 		Ok(())
 	})?;
 
@@ -464,9 +472,9 @@ fn two_wallets_one_seed_impl(test_dir: &'static str) -> Result<(), libwallet::Er
 		Ok(())
 	})?;
 
-	// 2) check_repair should recover them into a single wallet
+	// 2) scan should recover them into a single wallet
 	wallet::controller::owner_single_use(wallet1.clone(), mask1, |api, m| {
-		api.check_repair(m, true)?;
+		api.scan(m, None, true)?;
 		Ok(())
 	})?;
 
@@ -479,7 +487,9 @@ fn two_wallets_one_seed_impl(test_dir: &'static str) -> Result<(), libwallet::Er
 	})?;
 
 	// 3) If I recover from seed and start using the wallet without restoring,
-	// check_repair should restore the older outputs
+	// scan should restore the older outputs
+	// update, again, since scan is run automatically, balances on both
+	// wallets should turn out the same
 	send_to_dest!(
 		miner.clone(),
 		miner_mask,
@@ -509,13 +519,13 @@ fn two_wallets_one_seed_impl(test_dir: &'static str) -> Result<(), libwallet::Er
 	wallet::controller::owner_single_use(wallet4.clone(), mask4, |api, m| {
 		let info = wallet_info!(wallet4.clone(), m)?;
 		let outputs = api.retrieve_outputs(m, true, false, None)?.1;
-		assert_eq!(outputs.len(), 3);
-		assert_eq!(info.amount_currently_spendable, base_amount * 24);
+		assert_eq!(outputs.len(), 9);
+		assert_eq!(info.amount_currently_spendable, base_amount * 45);
 		Ok(())
 	})?;
 
 	wallet::controller::owner_single_use(wallet5.clone(), mask5, |api, m| {
-		api.restore(m)?;
+		api.scan(m, None, false)?;
 		Ok(())
 	})?;
 
@@ -528,7 +538,7 @@ fn two_wallets_one_seed_impl(test_dir: &'static str) -> Result<(), libwallet::Er
 	})?;
 
 	// 4) If I recover from seed and start using the wallet without restoring,
-	// check_repair should restore the older outputs
+	// scan should restore the older outputs
 	send_to_dest!(
 		miner.clone(),
 		miner_mask,
@@ -564,13 +574,13 @@ fn two_wallets_one_seed_impl(test_dir: &'static str) -> Result<(), libwallet::Er
 	wallet::controller::owner_single_use(wallet6.clone(), mask6, |api, m| {
 		let info = wallet_info!(wallet6.clone(), m)?;
 		let outputs = api.retrieve_outputs(m, true, false, None)?.1;
-		assert_eq!(outputs.len(), 3);
-		assert_eq!(info.amount_currently_spendable, base_amount * 33);
+		assert_eq!(outputs.len(), 12);
+		assert_eq!(info.amount_currently_spendable, base_amount * 78);
 		Ok(())
 	})?;
 
 	wallet::controller::owner_single_use(wallet6.clone(), mask6, |api, m| {
-		api.check_repair(m, true)?;
+		api.scan(m, None, true)?;
 		Ok(())
 	})?;
 
@@ -650,13 +660,13 @@ fn two_wallets_one_seed_impl(test_dir: &'static str) -> Result<(), libwallet::Er
 		api.set_active_account(m, "default")?;
 		let info = wallet_info!(wallet7.clone(), m)?;
 		let outputs = api.retrieve_outputs(m, true, false, None)?.1;
-		assert_eq!(outputs.len(), 3);
-		assert_eq!(info.amount_currently_spendable, base_amount * 42);
+		assert_eq!(outputs.len(), 15);
+		assert_eq!(info.amount_currently_spendable, base_amount * 120);
 		Ok(())
 	})?;
 
 	wallet::controller::owner_single_use(wallet8.clone(), mask8, |api, m| {
-		api.restore(m)?;
+		api.scan(m, None, false)?;
 		let info = wallet_info!(wallet8.clone(), m)?;
 		let outputs = api.retrieve_outputs(m, true, false, None)?.1;
 		assert_eq!(outputs.len(), 15);
@@ -670,7 +680,7 @@ fn two_wallets_one_seed_impl(test_dir: &'static str) -> Result<(), libwallet::Er
 	})?;
 
 	// 6) Start using same seed with a different account, now overwriting
-	// ids on account 2 as well, check_repair should get all outputs created
+	// ids on account 2 as well, scan should get all outputs created
 	// to now into 2 accounts
 
 	wallet::controller::owner_single_use(wallet9.clone(), mask9, |api, m| {
@@ -706,9 +716,9 @@ fn two_wallets_one_seed_impl(test_dir: &'static str) -> Result<(), libwallet::Er
 	wallet::controller::owner_single_use(wallet9.clone(), mask9, |api, m| {
 		let info = wallet_info!(wallet9.clone(), m)?;
 		let outputs = api.retrieve_outputs(m, true, false, None)?.1;
-		assert_eq!(outputs.len(), 3);
-		assert_eq!(info.amount_currently_spendable, base_amount * 15);
-		api.check_repair(m, true)?;
+		assert_eq!(outputs.len(), 6);
+		assert_eq!(info.amount_currently_spendable, base_amount * 21);
+		api.scan(m, None, true)?;
 		let info = wallet_info!(wallet9.clone(), m)?;
 		let outputs = api.retrieve_outputs(m, true, false, None)?.1;
 		assert_eq!(outputs.len(), 6);
@@ -724,9 +734,9 @@ fn two_wallets_one_seed_impl(test_dir: &'static str) -> Result<(), libwallet::Er
 
 	let _ = test_framework::award_blocks_to_wallet(&chain, miner.clone(), miner_mask, cm, false);
 
-	// 7) Ensure check_repair creates missing accounts
+	// 7) Ensure scan creates missing accounts
 	wallet::controller::owner_single_use(wallet10.clone(), mask10, |api, m| {
-		api.check_repair(m, true)?;
+		api.scan(m, None, true)?;
 		api.set_active_account(m, "account_1")?;
 		let info = wallet_info!(wallet10.clone(), m)?;
 		let outputs = api.retrieve_outputs(m, true, false, None)?.1;
@@ -745,10 +755,95 @@ fn two_wallets_one_seed_impl(test_dir: &'static str) -> Result<(), libwallet::Er
 	thread::sleep(Duration::from_millis(200));
 	Ok(())
 }
+
+// Testing output scanning functionality, easier here as the testing framework
+// is all here
+fn output_scanning_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
+	let mut wallet_proxy = create_wallet_proxy(test_dir);
+	let chain = wallet_proxy.chain.clone();
+	// Create a new wallet test client, and set its queues to communicate with the
+	// proxy
+	create_wallet_and_add!(
+		client1,
+		wallet1,
+		mask1_i,
+		test_dir,
+		"wallet1",
+		None,
+		&mut wallet_proxy,
+		false
+	);
+	let mask1 = (&mask1_i).as_ref();
+	thread::spawn(move || {
+		if let Err(e) = wallet_proxy.run() {
+			error!("Wallet Proxy error: {}", e);
+		}
+	});
+
+	// Do some mining
+	let bh = 20u64;
+	let _ =
+		test_framework::award_blocks_to_wallet(&chain, wallet1.clone(), mask1, bh as usize, false);
+
+	// Now some chain scanning
+	{
+		// Entire range should be correct
+		let ranges = client1.height_range_to_pmmr_indices(1, None)?;
+		assert_eq!(ranges, (1, 38));
+		let outputs = client1.get_outputs_by_pmmr_index(ranges.0, Some(ranges.1), 1000)?;
+		assert_eq!(outputs.2.len(), 20);
+
+		// Basic range should be correct
+		let ranges = client1.height_range_to_pmmr_indices(1, Some(14))?;
+		assert_eq!(ranges, (1, 25));
+		let outputs = client1.get_outputs_by_pmmr_index(ranges.0, Some(ranges.1), 1000)?;
+		println!(
+			"Last Index: {}, Max: {}, Outputs.len: {}",
+			outputs.0,
+			outputs.1,
+			outputs.2.len()
+		);
+		assert_eq!(outputs.2.len(), 14);
+
+		// mid range
+		let ranges = client1.height_range_to_pmmr_indices(5, Some(14))?;
+		assert_eq!(ranges, (8, 25));
+		let outputs = client1.get_outputs_by_pmmr_index(ranges.0, Some(ranges.1), 1000)?;
+		println!(
+			"Last Index: {}, Max: {}, Outputs.len: {}",
+			outputs.0,
+			outputs.1,
+			outputs.2.len()
+		);
+		for o in outputs.2.clone() {
+			println!("height: {}, mmr_index: {}", o.3, o.4);
+		}
+		assert_eq!(outputs.2.len(), 10);
+
+		// end
+		let ranges = client1.height_range_to_pmmr_indices(5, None)?;
+		assert_eq!(ranges, (8, 38));
+		let outputs = client1.get_outputs_by_pmmr_index(ranges.0, Some(ranges.1), 1000)?;
+		println!(
+			"Last Index: {}, Max: {}, Outputs.len: {}",
+			outputs.0,
+			outputs.1,
+			outputs.2.len()
+		);
+		for o in outputs.2.clone() {
+			println!("height: {}, mmr_index: {}", o.3, o.4);
+		}
+		assert_eq!(outputs.2.len(), 16);
+	}
+
+	Ok(())
+}
+
 #[test]
-fn check_repair() {
-	let test_dir = "test_output/check_repair";
-	if let Err(e) = check_repair_impl(test_dir) {
+fn scan() {
+	let test_dir = "test_output/scan";
+	setup(test_dir);
+	if let Err(e) = scan_impl(test_dir) {
 		panic!("Libwallet Error: {} - {}", e, e.backtrace().unwrap());
 	}
 	clean_output_dir(test_dir);
@@ -759,6 +854,16 @@ fn two_wallets_one_seed() {
 	let test_dir = "test_output/two_wallets_one_seed";
 	setup(test_dir);
 	if let Err(e) = two_wallets_one_seed_impl(test_dir) {
+		panic!("Libwallet Error: {} - {}", e, e.backtrace().unwrap());
+	}
+	clean_output_dir(test_dir);
+}
+
+#[test]
+fn output_scanning() {
+	let test_dir = "test_output/output_scanning";
+	setup(test_dir);
+	if let Err(e) = output_scanning_impl(test_dir) {
 		panic!("Libwallet Error: {} - {}", e, e.backtrace().unwrap());
 	}
 	clean_output_dir(test_dir);

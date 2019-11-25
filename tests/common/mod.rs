@@ -122,10 +122,12 @@ macro_rules! setup_proxy {
 	};
 }
 
+#[allow(dead_code)]
 pub fn clean_output_dir(test_dir: &str) {
 	let _ = fs::remove_dir_all(test_dir);
 }
 
+#[allow(dead_code)]
 pub fn setup(test_dir: &str) {
 	util::init_test_logger();
 	clean_output_dir(test_dir);
@@ -389,6 +391,7 @@ where
 	})?;
 
 	let res_val: Value = serde_json::from_str(&res).unwrap();
+	//println!("RES_VAL: {}", res_val);
 	// encryption error, just return the string
 	if res_val["error"] != json!(null) {
 		return Ok(Err(WalletAPIReturnError {

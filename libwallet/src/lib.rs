@@ -57,13 +57,25 @@ pub use crate::slate_versions::{
 	SlateVersion, VersionedCoinbase, VersionedSlate, CURRENT_SLATE_VERSION,
 	GRIN_BLOCK_HEADER_VERSION,
 };
+pub use api_impl::owner_updater::StatusMessage;
 pub use api_impl::types::{
 	BlockFees, InitTxArgs, InitTxSendArgs, IssueInvoiceTxArgs, NodeHeightResult,
 	OutputCommitMapping, SendTXArgs, VersionInfo,
 };
-pub use internal::restore::{check_repair, restore};
+pub use internal::scan::scan;
 pub use types::{
 	AcctPathMapping, BlockIdentifier, CbData, Context, NodeClient, NodeVersionInfo, OutputData,
-	OutputStatus, TxLogEntry, TxLogEntryType, TxWrapper, WalletBackend, WalletInfo, WalletInst,
-	WalletLCProvider, WalletOutputBatch,
+	OutputStatus, ScannedBlockInfo, TxLogEntry, TxLogEntryType, TxWrapper, WalletBackend,
+	WalletInfo, WalletInitStatus, WalletInst, WalletLCProvider, WalletOutputBatch,
 };
+
+/// Helper for taking a lock on the wallet instance
+#[macro_export]
+macro_rules! wallet_lock {
+	($wallet_inst: expr, $wallet: ident) => {
+		let inst = $wallet_inst.clone();
+		let mut w_lock = inst.lock();
+		let w_provider = w_lock.lc_provider()?;
+		let $wallet = w_provider.wallet_inst()?;
+	};
+}

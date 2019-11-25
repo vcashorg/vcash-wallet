@@ -73,10 +73,11 @@ fn get_kernel_local(
 fn get_outputs_by_pmmr_index_local(
 	chain: Arc<chain::Chain>,
 	start_index: u64,
+	end_index: Option<u64>,
 	max: u64,
 ) -> api::OutputListing {
 	let outputs = chain
-		.unspent_outputs_by_insertion_index(start_index, max)
+		.unspent_outputs_by_pmmr_index(start_index, max, end_index)
 		.unwrap();
 	api::OutputListing {
 		last_retrieved_index: outputs.0,
@@ -88,6 +89,22 @@ fn get_outputs_by_pmmr_index_local(
 				api::OutputPrintable::from_output(x, chain.clone(), None, true, false).unwrap()
 			})
 			.collect(),
+	}
+}
+
+/// get output listing in a given block range
+fn height_range_to_pmmr_indices_local(
+	chain: Arc<chain::Chain>,
+	start_index: u64,
+	end_index: Option<u64>,
+) -> api::OutputListing {
+	let indices = chain
+		.block_height_range_to_pmmr_indices(start_index, end_index)
+		.unwrap();
+	api::OutputListing {
+		last_retrieved_index: indices.0,
+		highest_index: indices.1,
+		outputs: vec![],
 	}
 }
 
@@ -226,10 +243,8 @@ where
 	C: NodeClient + 'a,
 	K: keychain::Keychain + 'a,
 {
-	let mut w_lock = wallet.lock();
-	let w = w_lock.lc_provider()?.wallet_inst()?;
 	let (wallet_refreshed, wallet_info) =
-		owner::retrieve_summary_info(&mut **w, keychain_mask, true, 1)?;
+		owner::retrieve_summary_info(wallet, keychain_mask, &None, true, 1)?;
 	assert!(wallet_refreshed);
 	Ok(wallet_info)
 }

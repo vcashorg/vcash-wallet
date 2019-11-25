@@ -20,8 +20,8 @@ use crate::grin_util::secp::key::SecretKey;
 use crate::internal::{tx, updater};
 use crate::slate_versions::SlateVersion;
 use crate::{
-	BlockFees, CbData, Error, ErrorKind, NodeClient, Slate, TxLogEntryType, VersionInfo,
-	WalletBackend,
+	BlockFees, CbData, Error, ErrorKind, NodeClient, Slate, TokenTxLogEntryType, TxLogEntryType,
+	VersionInfo, WalletBackend,
 };
 
 const FOREIGN_API_VERSION: u16 = 2;
@@ -81,16 +81,31 @@ where
 		None => w.parent_key_id(),
 	};
 	// Don't do this multiple times
-	let tx = updater::retrieve_txs(
-		&mut *w,
-		None,
-		Some(ret_slate.id),
-		Some(&parent_key_id),
-		use_test_rng,
-	)?;
-	for t in &tx {
-		if t.tx_type == TxLogEntryType::TxReceived {
-			return Err(ErrorKind::TransactionAlreadyReceived(ret_slate.id.to_string()).into());
+	if slate.token_type.clone().is_some() {
+		let tx = updater::retrieve_token_txs(
+			&mut *w,
+			None,
+			Some(ret_slate.id),
+			Some(&parent_key_id),
+			use_test_rng,
+		)?;
+		for t in &tx {
+			if t.tx_type == TokenTxLogEntryType::TokenTxReceived {
+				return Err(ErrorKind::TransactionAlreadyReceived(ret_slate.id.to_string()).into());
+			}
+		}
+	} else {
+		let tx = updater::retrieve_txs(
+			&mut *w,
+			None,
+			Some(ret_slate.id),
+			Some(&parent_key_id),
+			use_test_rng,
+		)?;
+		for t in &tx {
+			if t.tx_type == TxLogEntryType::TxReceived {
+				return Err(ErrorKind::TransactionAlreadyReceived(ret_slate.id.to_string()).into());
+			}
 		}
 	}
 

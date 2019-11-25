@@ -59,14 +59,16 @@ pub use crate::slate_versions::{
 };
 pub use api_impl::owner_updater::StatusMessage;
 pub use api_impl::types::{
-	BlockFees, InitTxArgs, InitTxSendArgs, IssueInvoiceTxArgs, NodeHeightResult,
-	OutputCommitMapping, SendTXArgs, VersionInfo,
+	BlockFees, InitTxArgs, InitTxSendArgs, IssueInvoiceTxArgs, IssueTokenArgs, NodeHeightResult,
+	OutputCommitMapping, SendTXArgs, TokenOutputCommitMapping, VersionInfo,
 };
 pub use internal::scan::scan;
+pub use internal::token_scan::token_scan;
 pub use types::{
 	AcctPathMapping, BlockIdentifier, CbData, Context, NodeClient, NodeVersionInfo, OutputData,
-	OutputStatus, ScannedBlockInfo, TxLogEntry, TxLogEntryType, TxWrapper, WalletBackend,
-	WalletInfo, WalletInitStatus, WalletInst, WalletLCProvider, WalletOutputBatch,
+	OutputStatus, ScannedBlockInfo, TokenOutputData, TokenTxLogEntry, TokenTxLogEntryType,
+	TxLogEntry, TxLogEntryType, TxWrapper, WalletBackend, WalletInfo, WalletInitStatus, WalletInst,
+	WalletLCProvider, WalletOutputBatch,
 };
 
 /// Helper for taking a lock on the wallet instance

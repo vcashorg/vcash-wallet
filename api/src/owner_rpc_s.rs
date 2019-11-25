@@ -19,7 +19,6 @@ use crate::config::{TorConfig, WalletConfig};
 use crate::core::core::Transaction;
 use crate::core::global;
 use crate::keychain::{Identifier, Keychain};
-use crate::libwallet::slate_versions::v2::TransactionV2;
 use crate::libwallet::{
 	AcctPathMapping, ErrorKind, InitTxArgs, IssueInvoiceTxArgs, NodeClient, NodeHeightResult,
 	OutputCommitMapping, Slate, SlateVersion, StatusMessage, TxLogEntry, VersionedSlate,
@@ -998,7 +997,7 @@ pub trait OwnerRpcS {
 	```
 	 */
 
-	fn post_tx(&self, token: Token, tx: TransactionV2, fluff: bool) -> Result<(), ErrorKind>;
+	fn post_tx(&self, token: Token, tx: Transaction, fluff: bool) -> Result<(), ErrorKind>;
 
 	/**
 	Networked version of [Owner::cancel_tx](struct.Owner.html#method.cancel_tx).
@@ -1077,7 +1076,7 @@ pub trait OwnerRpcS {
 				"num_inputs": 2,
 				"num_outputs": 1,
 				"parent_key_id": "0200000000000000000000000000000000",
-				"stored_tx": "0436430c-2b02-624c-2032-570501212b00.grintx",
+				"stored_tx": "0436430c-2b02-624c-2032-570501212b00.vcashtx",
 				"tx_slate_id": "0436430c-2b02-624c-2032-570501212b00",
 				"tx_type": "TxSent",
 				"kernel_excess": null,
@@ -1138,7 +1137,7 @@ pub trait OwnerRpcS {
 		&self,
 		token: Token,
 		tx: &TxLogEntry,
-	) -> Result<Option<TransactionV2>, ErrorKind>;
+	) -> Result<Option<Transaction>, ErrorKind>;
 
 	/**
 	Networked version of [Owner::verify_slate_messages](struct.Owner.html#method.verify_slate_messages).
@@ -1834,7 +1833,7 @@ where
 	fn init_send_tx(&self, token: Token, args: InitTxArgs) -> Result<VersionedSlate, ErrorKind> {
 		let slate = Owner::init_send_tx(self, (&token.keychain_mask).as_ref(), args)
 			.map_err(|e| e.kind())?;
-		let version = SlateVersion::V2;
+		let version = SlateVersion::V3;
 		Ok(VersionedSlate::into_version(slate, version))
 	}
 
@@ -1845,7 +1844,7 @@ where
 	) -> Result<VersionedSlate, ErrorKind> {
 		let slate = Owner::issue_invoice_tx(self, (&token.keychain_mask).as_ref(), args)
 			.map_err(|e| e.kind())?;
-		let version = SlateVersion::V2;
+		let version = SlateVersion::V3;
 		Ok(VersionedSlate::into_version(slate, version))
 	}
 
@@ -1862,7 +1861,7 @@ where
 			args,
 		)
 		.map_err(|e| e.kind())?;
-		let version = SlateVersion::V2;
+		let version = SlateVersion::V3;
 		Ok(VersionedSlate::into_version(out_slate, version))
 	}
 
@@ -1877,7 +1876,7 @@ where
 			&Slate::from(in_slate),
 		)
 		.map_err(|e| e.kind())?;
-		let version = SlateVersion::V2;
+		let version = SlateVersion::V3;
 		Ok(VersionedSlate::into_version(out_slate, version))
 	}
 
@@ -1910,20 +1909,14 @@ where
 		&self,
 		token: Token,
 		tx: &TxLogEntry,
-	) -> Result<Option<TransactionV2>, ErrorKind> {
+	) -> Result<Option<Transaction>, ErrorKind> {
 		Owner::get_stored_tx(self, (&token.keychain_mask).as_ref(), tx)
-			.map(|x| x.map(|y| TransactionV2::from(y)))
+			.map(|x| x.map(|y| y))
 			.map_err(|e| e.kind())
 	}
 
-	fn post_tx(&self, token: Token, tx: TransactionV2, fluff: bool) -> Result<(), ErrorKind> {
-		Owner::post_tx(
-			self,
-			(&token.keychain_mask).as_ref(),
-			&Transaction::from(tx),
-			fluff,
-		)
-		.map_err(|e| e.kind())
+	fn post_tx(&self, token: Token, tx: Transaction, fluff: bool) -> Result<(), ErrorKind> {
+		Owner::post_tx(self, (&token.keychain_mask).as_ref(), &tx, fluff).map_err(|e| e.kind())
 	}
 
 	fn verify_slate_messages(&self, token: Token, slate: VersionedSlate) -> Result<(), ErrorKind> {

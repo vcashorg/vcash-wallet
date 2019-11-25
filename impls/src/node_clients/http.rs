@@ -260,7 +260,7 @@ impl NodeClient for HTTPNodeClient {
 				for out in o.outputs {
 					let is_coinbase = match out.output_type {
 						api::OutputType::Coinbase => true,
-						api::OutputType::Transaction => false,
+						_ => false,
 					};
 					api_outputs.push((
 						out.commit,
@@ -306,6 +306,172 @@ impl NodeClient for HTTPNodeClient {
 			Err(e) => {
 				// if we got anything other than 200 back from server, bye
 				error!("heightstopmmr: error contacting {}. Error: {}", addr, e);
+				let report = format!(": {}", e);
+				Err(libwallet::ErrorKind::ClientCallback(report))?
+			}
+		}
+	}
+
+	/// Retrieve outputs from node
+	fn get_token_outputs_from_node(
+		&self,
+		token_type: String,
+		wallet_outputs: Vec<pedersen::Commitment>,
+	) -> Result<HashMap<pedersen::Commitment, (String, String, u64, u64)>, libwallet::Error> {
+		let addr = self.node_url();
+		// build the necessary query params -
+		// ?id=xxx&id=yyy&id=zzz
+		let query_params: Vec<String> = wallet_outputs
+			.iter()
+			.map(|commit| format!("id={}", util::to_hex(commit.as_ref().to_vec())))
+			.collect();
+
+		// build a map of api outputs by commit so we can look them up efficiently
+		let mut api_outputs: HashMap<pedersen::Commitment, (String, String, u64, u64)> =
+			HashMap::new();
+		let mut tasks = Vec::new();
+
+		for query_chunk in query_params.chunks(200) {
+			let url = format!(
+				"{}/v1/chain/tokenoutputs/byids?token_type={}&{}",
+				addr,
+				token_type,
+				query_chunk.join("&"),
+			);
+			tasks.push(api::client::get_async::<Vec<api::TokenOutput>>(
+				url.as_str(),
+				self.node_api_secret(),
+			));
+		}
+
+		let task = stream::futures_unordered(tasks).collect();
+
+		let mut rt = Runtime::new().unwrap();
+		let results = match rt.block_on(task) {
+			Ok(outputs) => outputs,
+			Err(e) => {
+				let report = format!("Getting token outputs by id: {}", e);
+				error!("Token Outputs by id failed: {}", e);
+				return Err(libwallet::ErrorKind::ClientCallback(report).into());
+			}
+		};
+
+		for res in results {
+			for out in res {
+				api_outputs.insert(
+					out.commit.commit(),
+					(
+						util::to_hex(out.commit.to_vec()),
+						out.token_type.to_hex(),
+						out.height,
+						out.mmr_index,
+					),
+				);
+			}
+		}
+		Ok(api_outputs)
+	}
+
+	fn get_token_outputs_by_pmmr_index(
+		&self,
+		start_index: u64,
+		end_index: Option<u64>,
+		max_outputs: u64,
+	) -> Result<
+		(
+			u64,
+			u64,
+			Vec<(
+				pedersen::Commitment,
+				pedersen::RangeProof,
+				String,
+				bool,
+				u64,
+				u64,
+			)>,
+		),
+		libwallet::Error,
+	> {
+		let addr = self.node_url();
+		let mut query_param = format!("start_index={}&max={}", start_index, max_outputs);
+
+		if let Some(e) = end_index {
+			query_param = format!("{}&end_index={}", query_param, e);
+		};
+
+		let url = format!("{}/v1/txhashset/tokenoutputs?{}", addr, query_param,);
+
+		let mut api_outputs: Vec<(
+			pedersen::Commitment,
+			pedersen::RangeProof,
+			String,
+			bool,
+			u64,
+			u64,
+		)> = Vec::new();
+
+		let client = Client::new();
+
+		match client.get::<api::OutputListing>(url.as_str(), self.node_api_secret()) {
+			Ok(o) => {
+				for out in o.outputs {
+					let is_token_issue = match out.output_type {
+						api::OutputType::TokenIsuue => true,
+						_ => false,
+					};
+					let block_height = if out.block_height.is_some() {
+						out.block_height.unwrap()
+					} else {
+						0
+					};
+					api_outputs.push((
+						out.commit,
+						out.range_proof().unwrap(),
+						out.token_type.unwrap(),
+						is_token_issue,
+						block_height,
+						out.mmr_index,
+					));
+				}
+
+				Ok((o.highest_index, o.last_retrieved_index, api_outputs))
+			}
+			Err(e) => {
+				// if we got anything other than 200 back from server, bye
+				error!(
+					"get_token_outputs_by_pmmr_index: error contacting {}. Error: {}",
+					addr, e
+				);
+				let report = format!("token outputs by pmmr index: {}", e);
+				Err(libwallet::ErrorKind::ClientCallback(report))?
+			}
+		}
+	}
+
+	fn height_range_to_token_pmmr_indices(
+		&self,
+		start_height: u64,
+		end_height: Option<u64>,
+	) -> Result<(u64, u64), libwallet::Error> {
+		debug!("Token Indices start");
+		let addr = self.node_url();
+		let mut query_param = format!("start_height={}", start_height);
+		if let Some(e) = end_height {
+			query_param = format!("{}&end_height={}", query_param, e);
+		};
+
+		let url = format!("{}/v1/txhashset/heightstotokenpmmr?{}", addr, query_param,);
+
+		let client = Client::new();
+
+		match client.get::<api::OutputListing>(url.as_str(), self.node_api_secret()) {
+			Ok(o) => Ok((o.last_retrieved_index, o.highest_index)),
+			Err(e) => {
+				// if we got anything other than 200 back from server, bye
+				error!(
+					"heightstotokenpmmr: error contacting {}. Error: {}",
+					addr, e
+				);
 				let report = format!(": {}", e);
 				Err(libwallet::ErrorKind::ClientCallback(report))?
 			}

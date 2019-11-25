@@ -32,7 +32,8 @@ use crate::core::core::Transaction;
 use crate::core::ser;
 use crate::libwallet::{
 	AcctPathMapping, Context, Error, ErrorKind, NodeClient, OutputData, ScannedBlockInfo,
-	TxLogEntry, WalletBackend, WalletInitStatus, WalletOutputBatch,
+	TokenOutputData, TokenTxLogEntry, TxLogEntry, WalletBackend, WalletInitStatus,
+	WalletOutputBatch,
 };
 use crate::util::secp::constants::SECRET_KEY_SIZE;
 use crate::util::secp::key::SecretKey;
@@ -55,6 +56,8 @@ const LAST_SCANNED_BLOCK: u8 = 'l' as u8;
 const LAST_SCANNED_KEY: &str = "LAST_SCANNED_KEY";
 const WALLET_INIT_STATUS: u8 = 'w' as u8;
 const WALLET_INIT_STATUS_KEY: &str = "WALLET_INIT_STATUS";
+const TOKEN_OUTPUT_PREFIX: u8 = 'T' as u8;
+const TOKEN_TX_LOG_ENTRY_PREFIX: u8 = 'L' as u8;
 
 /// test to see if database files exist in the current directory. If so,
 /// use a DB backend for all operations
@@ -302,8 +305,25 @@ where
 			.map_err(|e| e.into())
 	}
 
+	fn get_token(
+		&self,
+		id: &Identifier,
+		mmr_index: &Option<u64>,
+	) -> Result<TokenOutputData, Error> {
+		let key = match mmr_index {
+			Some(i) => to_key_u64(TOKEN_OUTPUT_PREFIX, &mut id.to_bytes().to_vec(), *i),
+			None => to_key(TOKEN_OUTPUT_PREFIX, &mut id.to_bytes().to_vec()),
+		};
+		option_to_not_found(self.db.get_ser(&key), || format!("Key Id: {}", id))
+			.map_err(|e| e.into())
+	}
+
 	fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = OutputData> + 'a> {
 		Box::new(self.db.iter(&[OUTPUT_PREFIX]).unwrap().map(|o| o.1))
+	}
+
+	fn token_iter<'a>(&'a self) -> Box<dyn Iterator<Item = TokenOutputData> + 'a> {
+		Box::new(self.db.iter(&[TOKEN_OUTPUT_PREFIX]).unwrap().map(|o| o.1))
 	}
 
 	fn get_tx_log_entry(&self, u: &Uuid) -> Result<Option<TxLogEntry>, Error> {
@@ -313,6 +333,20 @@ where
 
 	fn tx_log_iter<'a>(&'a self) -> Box<dyn Iterator<Item = TxLogEntry> + 'a> {
 		Box::new(self.db.iter(&[TX_LOG_ENTRY_PREFIX]).unwrap().map(|o| o.1))
+	}
+
+	fn get_token_tx_log_entry(&self, u: &Uuid) -> Result<Option<TokenTxLogEntry>, Error> {
+		let key = to_key(TOKEN_TX_LOG_ENTRY_PREFIX, &mut u.as_bytes().to_vec());
+		self.db.get_ser(&key).map_err(|e| e.into())
+	}
+
+	fn token_tx_log_iter<'a>(&'a self) -> Box<dyn Iterator<Item = TokenTxLogEntry> + 'a> {
+		Box::new(
+			self.db
+				.iter(&[TOKEN_TX_LOG_ENTRY_PREFIX])
+				.unwrap()
+				.map(|o| o.1),
+		)
 	}
 
 	fn get_private_context(
@@ -356,7 +390,7 @@ where
 	}
 
 	fn store_tx(&self, uuid: &str, tx: &Transaction) -> Result<(), Error> {
-		let filename = format!("{}.grintx", uuid);
+		let filename = format!("{}.vcashtx", uuid);
 		let path = path::Path::new(&self.data_file_dir)
 			.join(TX_SAVE_DIR)
 			.join(filename);
@@ -518,10 +552,38 @@ where
 		Ok(())
 	}
 
+	fn save_token(&mut self, out: TokenOutputData) -> Result<(), Error> {
+		// Save the output data to the db.
+		{
+			let key = match out.mmr_index {
+				Some(i) => to_key_u64(TOKEN_OUTPUT_PREFIX, &mut out.key_id.to_bytes().to_vec(), i),
+				None => to_key(TOKEN_OUTPUT_PREFIX, &mut out.key_id.to_bytes().to_vec()),
+			};
+			self.db.borrow().as_ref().unwrap().put_ser(&key, &out)?;
+		}
+
+		Ok(())
+	}
+
 	fn get(&self, id: &Identifier, mmr_index: &Option<u64>) -> Result<OutputData, Error> {
 		let key = match mmr_index {
 			Some(i) => to_key_u64(OUTPUT_PREFIX, &mut id.to_bytes().to_vec(), *i),
 			None => to_key(OUTPUT_PREFIX, &mut id.to_bytes().to_vec()),
+		};
+		option_to_not_found(self.db.borrow().as_ref().unwrap().get_ser(&key), || {
+			format!("Key ID: {}", id)
+		})
+		.map_err(|e| e.into())
+	}
+
+	fn get_token(
+		&self,
+		id: &Identifier,
+		mmr_index: &Option<u64>,
+	) -> Result<TokenOutputData, Error> {
+		let key = match mmr_index {
+			Some(i) => to_key_u64(TOKEN_OUTPUT_PREFIX, &mut id.to_bytes().to_vec(), *i),
+			None => to_key(TOKEN_OUTPUT_PREFIX, &mut id.to_bytes().to_vec()),
 		};
 		option_to_not_found(self.db.borrow().as_ref().unwrap().get_ser(&key), || {
 			format!("Key ID: {}", id)
@@ -541,12 +603,37 @@ where
 		)
 	}
 
+	fn token_iter(&self) -> Box<dyn Iterator<Item = TokenOutputData>> {
+		Box::new(
+			self.db
+				.borrow()
+				.as_ref()
+				.unwrap()
+				.iter(&[TOKEN_OUTPUT_PREFIX])
+				.unwrap()
+				.map(|o| o.1),
+		)
+	}
+
 	fn delete(&mut self, id: &Identifier, mmr_index: &Option<u64>) -> Result<(), Error> {
 		// Delete the output data.
 		{
 			let key = match mmr_index {
 				Some(i) => to_key_u64(OUTPUT_PREFIX, &mut id.to_bytes().to_vec(), *i),
 				None => to_key(OUTPUT_PREFIX, &mut id.to_bytes().to_vec()),
+			};
+			let _ = self.db.borrow().as_ref().unwrap().delete(&key);
+		}
+
+		Ok(())
+	}
+
+	fn token_delete(&mut self, id: &Identifier, mmr_index: &Option<u64>) -> Result<(), Error> {
+		// Delete the output data.
+		{
+			let key = match mmr_index {
+				Some(i) => to_key_u64(TOKEN_OUTPUT_PREFIX, &mut id.to_bytes().to_vec(), *i),
+				None => to_key(TOKEN_OUTPUT_PREFIX, &mut id.to_bytes().to_vec()),
 			};
 			let _ = self.db.borrow().as_ref().unwrap().delete(&key);
 		}
@@ -575,6 +662,18 @@ where
 				.as_ref()
 				.unwrap()
 				.iter(&[TX_LOG_ENTRY_PREFIX])
+				.unwrap()
+				.map(|o| o.1),
+		)
+	}
+
+	fn token_tx_log_iter(&self) -> Box<dyn Iterator<Item = TokenTxLogEntry>> {
+		Box::new(
+			self.db
+				.borrow()
+				.as_ref()
+				.unwrap()
+				.iter(&[TOKEN_TX_LOG_ENTRY_PREFIX])
 				.unwrap()
 				.map(|o| o.1),
 		)
@@ -651,6 +750,24 @@ where
 		Ok(())
 	}
 
+	fn save_token_tx_log_entry(
+		&mut self,
+		tx_in: TokenTxLogEntry,
+		parent_id: &Identifier,
+	) -> Result<(), Error> {
+		let tx_log_key = to_key_u64(
+			TOKEN_TX_LOG_ENTRY_PREFIX,
+			&mut parent_id.to_bytes().to_vec(),
+			tx_in.id as u64,
+		);
+		self.db
+			.borrow()
+			.as_ref()
+			.unwrap()
+			.put_ser(&tx_log_key, &tx_in)?;
+		Ok(())
+	}
+
 	fn save_acct_path(&mut self, mapping: AcctPathMapping) -> Result<(), Error> {
 		let acct_key = to_key(
 			ACCOUNT_PATH_MAPPING_PREFIX,
@@ -679,6 +796,11 @@ where
 	fn lock_output(&mut self, out: &mut OutputData) -> Result<(), Error> {
 		out.lock();
 		self.save(out.clone())
+	}
+
+	fn lock_token_output(&mut self, out: &mut TokenOutputData) -> Result<(), Error> {
+		out.lock();
+		self.save_token(out.clone())
 	}
 
 	fn save_private_context(

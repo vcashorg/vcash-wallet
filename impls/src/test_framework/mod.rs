@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use self::core::core::hash::Hashed;
 use crate::api;
 use crate::chain;
 use crate::chain::Chain;
@@ -24,6 +25,7 @@ use crate::libwallet::api_impl::{foreign, owner};
 use crate::libwallet::{
 	BlockFees, InitTxArgs, NodeClient, WalletInfo, WalletInst, WalletLCProvider,
 };
+use crate::util;
 use crate::util::secp::key::SecretKey;
 use crate::util::secp::pedersen;
 use crate::util::Mutex;
@@ -134,7 +136,8 @@ pub fn add_block_with_reward(
 		global::min_edge_bits(),
 	)
 	.unwrap();
-	chain.process_block(b, chain::Options::MINE).unwrap();
+	get_block_bit_diff(&mut b);
+	chain.process_block(b, chain::Options::SKIP_POW).unwrap();
 	chain.validate(false).unwrap();
 }
 
@@ -247,4 +250,12 @@ where
 		owner::retrieve_summary_info(wallet, keychain_mask, &None, true, 1)?;
 	assert!(wallet_refreshed);
 	Ok(wallet_info)
+}
+
+fn get_block_bit_diff(block: &mut core::core::Block) {
+	block.header.bits = 0x2100ffff;
+	let coin_base_str = core::core::get_grin_magic_data_str(block.header.hash());
+	block.aux_data.coinbase_tx = util::from_hex(coin_base_str).unwrap();
+	block.aux_data.aux_header.merkle_root = block.aux_data.coinbase_tx.dhash();
+	block.aux_data.aux_header.nbits = block.header.bits;
 }

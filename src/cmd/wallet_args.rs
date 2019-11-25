@@ -436,6 +436,25 @@ pub fn parse_account_args(account_args: &ArgMatches) -> Result<command::AccountA
 	Ok(command::AccountArgs { create: create })
 }
 
+pub fn parse_issue_token_args(
+	token_args: &ArgMatches,
+) -> Result<command::IssueTokenTxArgs, ParseError> {
+	// amount
+	let amount = parse_required(token_args, "amount")?;
+	let amount = core::core::amount_from_hr_string(amount);
+	let amount = match amount {
+		Ok(a) => a,
+		Err(e) => {
+			let msg = format!(
+				"Could not parse amount as a number with optional decimal point. e={}",
+				e
+			);
+			return Err(ParseError::ArgumentError(msg));
+		}
+	};
+	Ok(command::IssueTokenTxArgs { amount })
+}
+
 pub fn parse_send_args(args: &ArgMatches) -> Result<command::SendArgs, ParseError> {
 	// amount
 	let amount = parse_required(args, "amount")?;
@@ -449,6 +468,19 @@ pub fn parse_send_args(args: &ArgMatches) -> Result<command::SendArgs, ParseErro
 			);
 			return Err(ParseError::ArgumentError(msg));
 		}
+	};
+
+	// token type
+	let token_type = match args.is_present("token") {
+		true => {
+			if args.value_of("token").unwrap().len() != 64 {
+				return Err(ParseError::ArgumentError(
+					"token length should be 64".to_owned(),
+				));
+			}
+			Some(args.value_of("token").unwrap().to_owned())
+		}
+		false => None,
 	};
 
 	// message
@@ -521,17 +553,18 @@ pub fn parse_send_args(args: &ArgMatches) -> Result<command::SendArgs, ParseErro
 	};
 
 	Ok(command::SendArgs {
-		amount: amount,
-		message: message,
+		amount,
+		token_type,
+		message,
 		minimum_confirmations: min_c,
 		selection_strategy: selection_strategy.to_owned(),
 		estimate_selection_strategies,
 		method: method.to_owned(),
 		dest: dest.to_owned(),
-		change_outputs: change_outputs,
-		fluff: fluff,
-		max_outputs: max_outputs,
-		target_slate_version: target_slate_version,
+		change_outputs,
+		fluff,
+		max_outputs,
+		target_slate_version,
 	})
 }
 
@@ -595,6 +628,20 @@ pub fn parse_issue_invoice_args(
 			return Err(ParseError::ArgumentError(msg));
 		}
 	};
+
+	// token type
+	let _token_type = match args.is_present("token") {
+		true => {
+			if args.value_of("token").unwrap().len() != 64 {
+				return Err(ParseError::ArgumentError(
+					"token length should be 64".to_owned(),
+				));
+			}
+			Some(args.value_of("token").unwrap().to_owned())
+		}
+		false => None,
+	};
+
 	// message
 	let message = match args.is_present("message") {
 		true => Some(args.value_of("message").unwrap().to_owned()),
@@ -616,6 +663,7 @@ pub fn parse_issue_invoice_args(
 		dest: dest.into(),
 		issue_args: IssueInvoiceTxArgs {
 			dest_acct_name: None,
+			token_type: None,
 			amount,
 			message,
 			target_slate_version,
@@ -973,6 +1021,10 @@ where
 			let a = arg_parse!(parse_account_args(&args));
 			command::account(wallet, km, a)
 		}
+		("issue_token", Some(args)) => {
+			let a = arg_parse!(parse_issue_token_args(&args));
+			command::issue_token(wallet, km, a)
+		}
 		("send", Some(args)) => {
 			let a = arg_parse!(parse_send_args(&args));
 			command::send(
@@ -1048,7 +1100,7 @@ where
 			command::scan(wallet, km, a)
 		}
 		_ => {
-			let msg = format!("Unknown wallet command, use 'grin-wallet help' for details");
+			let msg = format!("Unknown wallet command, use 'vcash-wallet help' for details");
 			return Err(ErrorKind::ArgumentError(msg).into());
 		}
 	};

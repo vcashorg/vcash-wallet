@@ -12,7 +12,7 @@
 // limitations under the License.
 
 //! Common functions for wallet integration tests
-extern crate grin_wallet;
+extern crate vcash_wallet;
 
 use grin_wallet_config as config;
 use grin_wallet_impls::test_framework::LocalWalletClient;
@@ -33,8 +33,8 @@ use grin_wallet_util::grin_keychain::ExtKeychain;
 use grin_wallet_util::grin_util::{from_hex, static_secp_instance};
 use util::secp::key::{PublicKey, SecretKey};
 
-use grin_wallet::cmd::wallet_args;
 use grin_wallet_util::grin_api as api;
+use vcash_wallet::cmd::wallet_args;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};

@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::grin_core::core::hash::Hashed;
 use crate::grin_core::core::Transaction;
+use crate::grin_core::global;
 use crate::grin_core::ser;
 use crate::grin_util;
 use crate::grin_util::secp::key::SecretKey;
@@ -25,12 +26,16 @@ use crate::grin_util::Mutex;
 
 use crate::api_impl::owner_updater::StatusMessage;
 use crate::grin_keychain::{Identifier, Keychain};
-use crate::internal::{keys, scan, selection, tx, updater};
+use crate::internal::{keys, scan, selection, token_scan, tx, updater};
 use crate::slate::Slate;
-use crate::types::{AcctPathMapping, NodeClient, TxLogEntry, TxWrapper, WalletBackend, WalletInfo};
+use crate::types::{
+	AcctPathMapping, NodeClient, TokenTxLogEntry, TokenTxLogEntryType, TxLogEntry, TxWrapper,
+	WalletBackend, WalletInfo,
+};
 use crate::{
-	wallet_lock, InitTxArgs, IssueInvoiceTxArgs, NodeHeightResult, OutputCommitMapping,
-	ScannedBlockInfo, TxLogEntryType, WalletInitStatus, WalletInst, WalletLCProvider,
+	wallet_lock, InitTxArgs, IssueInvoiceTxArgs, IssueTokenArgs, NodeHeightResult,
+	OutputCommitMapping, ScannedBlockInfo, TokenOutputCommitMapping, TxLogEntryType,
+	WalletInitStatus, WalletInst, WalletLCProvider,
 };
 use crate::{Error, ErrorKind};
 use std::sync::mpsc::Sender;
@@ -111,6 +116,45 @@ where
 	))
 }
 
+/// retrieve outputs
+pub fn retrieve_token_outputs<'a, L, C, K>(
+	wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
+	keychain_mask: Option<&SecretKey>,
+	status_send_channel: &Option<Sender<StatusMessage>>,
+	include_spent: bool,
+	refresh_from_node: bool,
+	tx_id: Option<u32>,
+) -> Result<(bool, Vec<TokenOutputCommitMapping>), Error>
+where
+	L: WalletLCProvider<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	let mut validated = false;
+	if refresh_from_node {
+		validated = update_wallet_state(
+			wallet_inst.clone(),
+			keychain_mask,
+			status_send_channel,
+			false,
+		)?;
+	}
+
+	wallet_lock!(wallet_inst, w);
+	let parent_key_id = w.parent_key_id();
+
+	Ok((
+		validated,
+		updater::retrieve_token_outputs(
+			&mut **w,
+			keychain_mask,
+			include_spent,
+			tx_id,
+			Some(&parent_key_id),
+		)?,
+	))
+}
+
 /// Retrieve txs
 pub fn retrieve_txs<'a, L, C, K>(
 	wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
@@ -138,6 +182,38 @@ where
 	wallet_lock!(wallet_inst, w);
 	let parent_key_id = w.parent_key_id();
 	let txs = updater::retrieve_txs(&mut **w, tx_id, tx_slate_id, Some(&parent_key_id), false)?;
+
+	Ok((validated, txs))
+}
+
+/// Retrieve token txs
+pub fn retrieve_token_txs<'a, L, C, K>(
+	wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
+	keychain_mask: Option<&SecretKey>,
+	status_send_channel: &Option<Sender<StatusMessage>>,
+	refresh_from_node: bool,
+	tx_id: Option<u32>,
+	tx_slate_id: Option<Uuid>,
+) -> Result<(bool, Vec<TokenTxLogEntry>), Error>
+where
+	L: WalletLCProvider<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	let mut validated = false;
+	if refresh_from_node {
+		validated = update_wallet_state(
+			wallet_inst.clone(),
+			keychain_mask,
+			status_send_channel,
+			false,
+		)?;
+	}
+
+	wallet_lock!(wallet_inst, w);
+	let parent_key_id = w.parent_key_id();
+	let txs =
+		updater::retrieve_token_txs(&mut **w, tx_id, tx_slate_id, Some(&parent_key_id), false)?;
 
 	Ok((validated, txs))
 }
@@ -171,6 +247,47 @@ where
 	Ok((validated, wallet_info))
 }
 
+/// Initiate issue token tx
+pub fn init_issue_token_tx<'a, T: ?Sized, C, K>(
+	w: &mut T,
+	keychain_mask: Option<&SecretKey>,
+	args: IssueTokenArgs,
+	use_test_rng: bool,
+) -> Result<Slate, Error>
+where
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	let parent_key_id = match args.acct_name {
+		Some(d) => {
+			let pm = w.get_acct_path(d)?;
+			match pm {
+				Some(p) => p.path,
+				None => w.parent_key_id(),
+			}
+		}
+		None => w.parent_key_id(),
+	};
+
+	let mut slate = tx::new_tx_slate(&mut *w, args.amount, None, 2, use_test_rng)?;
+
+	let context = tx::fill_tx_to_slate(
+		&mut *w,
+		keychain_mask,
+		&mut slate,
+		1,
+		1,
+		1,
+		false,
+		&parent_key_id,
+		use_test_rng,
+	)?;
+
+	selection::lock_tx_context(&mut *w, keychain_mask, &slate, &context)?;
+	Ok(slate)
+}
+
 /// Initiate tx as sender
 pub fn init_send_tx<'a, T: ?Sized, C, K>(
 	w: &mut T,
@@ -202,7 +319,7 @@ where
 		None => None,
 	};
 
-	let mut slate = tx::new_tx_slate(&mut *w, args.amount, 2, use_test_rng)?;
+	let mut slate = tx::new_tx_slate(&mut *w, args.amount, args.token_type, 2, use_test_rng)?;
 
 	// if we just want to estimate, don't save a context, just send the results
 	// back
@@ -281,7 +398,7 @@ where
 		None => None,
 	};
 
-	let mut slate = tx::new_tx_slate(&mut *w, args.amount, 2, use_test_rng)?;
+	let mut slate = tx::new_tx_slate(&mut *w, args.amount, args.token_type, 2, use_test_rng)?;
 	let context = tx::add_output_to_slate(
 		&mut *w,
 		keychain_mask,
@@ -334,16 +451,31 @@ where
 		None => w.parent_key_id(),
 	};
 	// Don't do this multiple times
-	let tx = updater::retrieve_txs(
-		&mut *w,
-		None,
-		Some(ret_slate.id),
-		Some(&parent_key_id),
-		use_test_rng,
-	)?;
-	for t in &tx {
-		if t.tx_type == TxLogEntryType::TxSent {
-			return Err(ErrorKind::TransactionAlreadyReceived(ret_slate.id.to_string()).into());
+	if slate.token_type.clone().is_some() {
+		let tx = updater::retrieve_token_txs(
+			&mut *w,
+			None,
+			Some(ret_slate.id),
+			Some(&parent_key_id),
+			use_test_rng,
+		)?;
+		for t in &tx {
+			if t.tx_type == TokenTxLogEntryType::TokenTxSent {
+				return Err(ErrorKind::TransactionAlreadyReceived(ret_slate.id.to_string()).into());
+			}
+		}
+	} else {
+		let tx = updater::retrieve_txs(
+			&mut *w,
+			None,
+			Some(ret_slate.id),
+			Some(&parent_key_id),
+			use_test_rng,
+		)?;
+		for t in &tx {
+			if t.tx_type == TxLogEntryType::TxSent {
+				return Err(ErrorKind::TransactionAlreadyReceived(ret_slate.id.to_string()).into());
+			}
 		}
 	}
 
@@ -448,7 +580,7 @@ where
 		false,
 	)? {
 		return Err(ErrorKind::TransactionCancellationError(
-			"Can't contact running Grin node. Not Cancelling.",
+			"Can't contact running VCash node. Not Cancelling.",
 		))?;
 	}
 	wallet_lock!(wallet_inst, w);
@@ -475,8 +607,14 @@ pub fn post_tx<'a, C>(client: &C, tx: &Transaction, fluff: bool) -> Result<(), E
 where
 	C: NodeClient + 'a,
 {
-	let tx_hex = grin_util::to_hex(ser::ser_vec(tx, ser::ProtocolVersion(1)).unwrap());
-	let res = client.post_tx(&TxWrapper { tx_hex: tx_hex }, fluff);
+	let current_height = client.get_chain_tip()?.0;
+	let version = if current_height >= global::support_token_height() {
+		ser::ProtocolVersion(2)
+	} else {
+		ser::ProtocolVersion(1)
+	};
+	let tx_hex = grin_util::to_hex(ser::ser_vec(tx, version).unwrap());
+	let res = client.post_tx(&TxWrapper { tx_hex }, fluff);
 	if let Err(e) = res {
 		error!("api: post_tx: failed with error: {}", e);
 		Err(e)
@@ -518,7 +656,7 @@ where
 
 	let start_height = match start_height {
 		Some(h) => h,
-		None => 1,
+		None => 0,
 	};
 
 	let mut info = scan::scan(
@@ -530,6 +668,15 @@ where
 		status_send_channel,
 	)?;
 	info.hash = tip.1;
+
+	token_scan::token_scan(
+		wallet_inst.clone(),
+		keychain_mask,
+		delete_unconfirmed,
+		start_height,
+		tip.0,
+		status_send_channel,
+	)?;
 
 	wallet_lock!(wallet_inst, w);
 	let mut batch = w.batch(keychain_mask)?;
@@ -632,6 +779,15 @@ where
 		return Ok(result);
 	}
 
+	let mut token_txs = {
+		wallet_lock!(wallet_inst, w);
+		updater::retrieve_token_txs(&mut **w, None, None, Some(&parent_key_id), true)?
+	};
+	result = update_token_txs_via_kernel(wallet_inst.clone(), keychain_mask, &mut token_txs)?;
+	if !result {
+		return Ok(result);
+	}
+
 	// Step 3: Scan back a bit on the chain
 	let res = client.get_chain_tip();
 	// if we can't get the tip, don't continue
@@ -687,6 +843,15 @@ where
 	)?;
 
 	info.hash = tip.1;
+
+	token_scan::token_scan(
+		wallet_inst.clone(),
+		keychain_mask,
+		false,
+		start_index,
+		tip.0,
+		status_send_channel,
+	)?;
 
 	wallet_lock!(wallet_inst, w);
 	let mut batch = w.batch(keychain_mask)?;
@@ -772,6 +937,61 @@ where
 			}
 		} else {
 			warn!("Attempted to update via kernel excess for transaction {:?}, but kernel excess was not stored", tx.tx_slate_id);
+		}
+	}
+	Ok(true)
+}
+
+/// Update token transactions that need to be validated via kernel lookup
+fn update_token_txs_via_kernel<'a, L, C, K>(
+	wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
+	keychain_mask: Option<&SecretKey>,
+	txs: &mut Vec<TokenTxLogEntry>,
+) -> Result<bool, Error>
+where
+	L: WalletLCProvider<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	let parent_key_id = {
+		wallet_lock!(wallet_inst, w);
+		w.parent_key_id().clone()
+	};
+
+	let mut client = {
+		wallet_lock!(wallet_inst, w);
+		w.w2n_client().clone()
+	};
+
+	let height = match client.get_chain_tip() {
+		Ok(h) => h.0,
+		Err(_) => return Ok(false),
+	};
+
+	for tx in txs.iter_mut() {
+		if tx.confirmed {
+			continue;
+		}
+		if tx.amount_debited != 0 && tx.amount_credited != 0 {
+			continue;
+		}
+		if let Some(e) = tx.kernel_excess {
+			let res = client.get_kernel(&e, tx.kernel_lookup_min_height, Some(height));
+			let kernel = match res {
+				Ok(k) => k,
+				Err(_) => return Ok(false),
+			};
+			if let Some(k) = kernel {
+				debug!("Kernel Retrieved: {:?}", k);
+				wallet_lock!(wallet_inst, w);
+				let mut batch = w.batch(keychain_mask)?;
+				tx.confirmed = true;
+				tx.update_confirmation_ts();
+				batch.save_token_tx_log_entry(tx.clone(), &parent_key_id)?;
+				batch.commit()?;
+			}
+		} else {
+			warn!("Attempted to update via kernel excess for token transaction {:?}, but kernel excess was not stored", tx.tx_slate_id);
 		}
 	}
 	Ok(true)

@@ -20,12 +20,13 @@ use crate::error::{Error, ErrorKind};
 use crate::grin_core::core::amount_to_hr_string;
 use crate::grin_core::core::committed::Committed;
 use crate::grin_core::core::transaction::{
-	Input, KernelFeatures, Output, Transaction, TransactionBody, TxKernel, Weighting,
+	KernelFeatures, Output, TokenKernelFeatures, TokenKey, TokenTxKernel, Transaction, TxKernel,
+	Weighting,
 };
 use crate::grin_core::core::verifier_cache::LruVerifierCache;
 use crate::grin_core::libtx::{aggsig, build, proof::ProofBuild, secp_ser, tx_fee};
 use crate::grin_core::map_vec;
-use crate::grin_keychain::{BlindSum, BlindingFactor, Keychain};
+use crate::grin_keychain::{BlindSum, BlindingFactor, Identifier, Keychain};
 use crate::grin_util::secp::key::{PublicKey, SecretKey};
 use crate::grin_util::secp::pedersen::Commitment;
 use crate::grin_util::secp::Signature;
@@ -39,10 +40,8 @@ use std::fmt;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::slate_versions::v2::{
-	CoinbaseV2, InputV2, OutputV2, ParticipantDataV2, SlateV2, TransactionBodyV2, TransactionV2,
-	TxKernelV2, VersionCompatInfoV2,
-};
+use crate::slate_versions::v2::{CoinbaseV2, OutputV2, TxKernelV2};
+use crate::slate_versions::v3::{ParticipantDataV3, SlateV3, VersionCompatInfoV3};
 use crate::slate_versions::{CURRENT_SLATE_VERSION, GRIN_BLOCK_HEADER_VERSION};
 use crate::types::CbData;
 
@@ -162,6 +161,8 @@ pub struct Slate {
 	/// base amount (excluding fee)
 	#[serde(with = "secp_ser::string_or_u64")]
 	pub amount: u64,
+	/// tx token type
+	pub token_type: Option<String>,
 	/// fee amount
 	#[serde(with = "secp_ser::string_or_u64")]
 	pub fee: u64,
@@ -206,8 +207,8 @@ impl Slate {
 	/// Recieve a slate, upgrade it to the latest version internally
 	pub fn deserialize_upgrade(slate_json: &str) -> Result<Slate, Error> {
 		let version = Slate::parse_slate_version(slate_json)?;
-		let v2: SlateV2 = match version {
-			2 => serde_json::from_str(slate_json).context(ErrorKind::SlateDeser)?,
+		let v3: SlateV3 = match version {
+			3 => serde_json::from_str(slate_json).context(ErrorKind::SlateDeser)?,
 			// left as a reminder
 			/*0 => {
 				let v0: SlateV0 =
@@ -217,7 +218,7 @@ impl Slate {
 			}*/
 			_ => return Err(ErrorKind::SlateVersion(version).into()),
 		};
-		Ok(v2.into())
+		Ok(v3.into())
 	}
 
 	/// Create a new slate
@@ -227,6 +228,7 @@ impl Slate {
 			id: Uuid::new_v4(),
 			tx: Transaction::empty(),
 			amount: 0,
+			token_type: None,
 			fee: 0,
 			height: 0,
 			lock_height: 0,
@@ -246,15 +248,17 @@ impl Slate {
 		keychain: &K,
 		builder: &B,
 		elems: Vec<Box<build::Append<K, B>>>,
-	) -> Result<BlindingFactor, Error>
+	) -> Result<(BlindingFactor, BlindingFactor), Error>
 	where
 		K: Keychain,
 		B: ProofBuild,
 	{
 		self.update_kernel();
-		let (tx, blind) = build::partial_transaction(self.tx.clone(), elems, keychain, builder)?;
+		self.update_token_kernel();
+		let (tx, blind, token_bind) =
+			build::partial_transaction(self.tx.clone(), elems, keychain, builder)?;
 		self.tx = tx;
-		Ok(blind)
+		Ok((blind, token_bind))
 	}
 
 	/// Update the tx kernel based on kernel features derived from the current slate.
@@ -267,12 +271,65 @@ impl Slate {
 			.replace_kernel(TxKernel::with_features(self.kernel_features()));
 	}
 
+	/// Update the tx token kernel based on token kernel features derived from the current slate.
+	/// update the tx token kernel to reflect this during the tx building process.
+	pub fn update_token_kernel(&mut self) {
+		if self.token_type.is_some() {
+			let token_type = TokenKey::from_hex(self.token_type.clone().unwrap().as_str()).unwrap();
+			self.tx = self.tx.clone().replace_token_kernel(
+				TokenTxKernel::with_features(self.token_kernel_features())
+					.with_token_type(token_type),
+			);
+		}
+	}
+
+	/// Construct Issue Token tx Kernel
+	pub fn construct_issue_token_kernel<K>(
+		&mut self,
+		keychain: &K,
+		amount: u64,
+		output_id: &Identifier,
+	) -> Result<(), Error>
+	where
+		K: Keychain,
+	{
+		if self.token_type.is_some() {
+			let feature = TokenKernelFeatures::IssueToken;
+			let token_type = TokenKey::from_hex(self.token_type.clone().unwrap().as_str())?;
+			let mut token_kernel =
+				TokenTxKernel::with_features(feature).with_token_type(token_type.clone());
+
+			let secp = keychain.secp();
+			let value_commit = secp.commit_value(amount).unwrap();
+			let out_commit = self.tx.token_outputs()[0].commit.clone();
+			let excess = secp.commit_sum(vec![out_commit], vec![value_commit])?;
+			let pubkey = excess.to_pubkey(&secp)?;
+			let msg = feature.token_kernel_sig_msg(token_type.clone())?;
+			let sig = aggsig::sign_from_key_id(
+				&secp,
+				keychain,
+				&msg,
+				amount,
+				&output_id,
+				None,
+				Some(&pubkey),
+			)?;
+
+			token_kernel.excess = excess;
+			token_kernel.excess_sig = sig;
+			self.tx = self.tx.clone().replace_token_kernel(token_kernel);
+		}
+
+		Ok(())
+	}
+
 	/// Completes callers part of round 1, adding public key info
 	/// to the slate
 	pub fn fill_round_1<K>(
 		&mut self,
 		keychain: &K,
 		sec_key: &mut SecretKey,
+		token_sec_key: &SecretKey,
 		sec_nonce: &SecretKey,
 		participant_id: usize,
 		message: Option<String>,
@@ -285,9 +342,13 @@ impl Slate {
 		if self.tx.offset == BlindingFactor::zero() {
 			self.generate_offset(keychain, sec_key, use_test_rng)?;
 		}
+		let key = match self.token_type.clone() {
+			Some(_) => token_sec_key,
+			None => sec_key,
+		};
 		self.add_participant_info(
 			keychain,
-			&sec_key,
+			key,
 			&sec_nonce,
 			participant_id,
 			None,
@@ -316,11 +377,28 @@ impl Slate {
 		Ok(msg)
 	}
 
+	fn token_kernel_features(&self) -> TokenKernelFeatures {
+		match self.lock_height {
+			0 => TokenKernelFeatures::PlainToken,
+			_ => TokenKernelFeatures::HeightLockedToken {
+				lock_height: self.lock_height,
+			},
+		}
+	}
+
+	fn token_msg_to_sign(&self) -> Result<secp::Message, Error> {
+		let features = self.token_kernel_features();
+		let token_type = TokenKey::from_hex(self.token_type.clone().unwrap().as_str())?;
+		let msg = features.token_kernel_sig_msg(token_type)?;
+		Ok(msg)
+	}
+
 	/// Completes caller's part of round 2, completing signatures
 	pub fn fill_round_2<K>(
 		&mut self,
 		keychain: &K,
 		sec_key: &SecretKey,
+		token_sec_key: &SecretKey,
 		sec_nonce: &SecretKey,
 		participant_id: usize,
 	) -> Result<(), Error>
@@ -330,13 +408,17 @@ impl Slate {
 		self.check_fees()?;
 
 		self.verify_part_sigs(keychain.secp())?;
+		let (key, msg) = match self.token_type.clone() {
+			Some(_) => (token_sec_key, self.token_msg_to_sign()?),
+			None => (sec_key, self.msg_to_sign()?),
+		};
 		let sig_part = aggsig::calculate_partial_sig(
 			keychain.secp(),
-			sec_key,
+			key,
 			sec_nonce,
 			&self.pub_nonce_sum(keychain.secp())?,
 			Some(&self.pub_blind_sum(keychain.secp())?),
-			&self.msg_to_sign()?,
+			&msg,
 		)?;
 		for i in 0..self.num_participants {
 			if self.participant_data[i].id == participant_id as u64 {
@@ -354,7 +436,11 @@ impl Slate {
 		K: Keychain,
 	{
 		let final_sig = self.finalize_signature(keychain)?;
-		self.finalize_transaction(keychain, &final_sig)
+		if self.token_type.is_some() {
+			self.finalize_token_transaction(keychain, &final_sig)
+		} else {
+			self.finalize_transaction(keychain, &final_sig)
+		}
 	}
 
 	/// Return the participant with the given id
@@ -470,7 +556,7 @@ impl Slate {
 	/// For now, we'll have the transaction initiator be responsible for it
 	/// Return offset private key for the participant to use later in the
 	/// transaction
-	fn generate_offset<K>(
+	pub fn generate_offset<K>(
 		&mut self,
 		keychain: &K,
 		sec_key: &mut SecretKey,
@@ -511,6 +597,9 @@ impl Slate {
 			self.tx.inputs().len(),
 			self.tx.outputs().len(),
 			self.tx.kernels().len(),
+			self.tx.token_inputs().len(),
+			self.tx.token_outputs().len(),
+			self.tx.token_kernels().len(),
 			None,
 		);
 
@@ -535,6 +624,10 @@ impl Slate {
 
 	/// Verifies all of the partial signatures in the Slate are valid
 	fn verify_part_sigs(&self, secp: &secp::Secp256k1) -> Result<(), Error> {
+		let msg = match self.token_type.clone() {
+			Some(_) => self.token_msg_to_sign()?,
+			None => self.msg_to_sign()?,
+		};
 		// collect public nonces
 		for p in self.participant_data.iter() {
 			if p.is_complete() {
@@ -544,7 +637,7 @@ impl Slate {
 					&self.pub_nonce_sum(secp)?,
 					&p.public_blind_excess,
 					Some(&self.pub_blind_sum(secp)?),
-					&self.msg_to_sign()?,
+					&msg,
 				)?;
 			}
 		}
@@ -623,6 +716,10 @@ impl Slate {
 		let final_sig = aggsig::add_signatures(&keychain.secp(), part_sigs, &pub_nonce_sum)?;
 
 		// Calculate the final public key (for our own sanity check)
+		let msg = match self.token_type.clone() {
+			Some(_) => self.token_msg_to_sign()?,
+			None => self.msg_to_sign()?,
+		};
 
 		// Check our final sig verifies
 		aggsig::verify_completed_sig(
@@ -630,7 +727,7 @@ impl Slate {
 			&final_sig,
 			&final_pubkey,
 			Some(&final_pubkey),
-			&self.msg_to_sign()?,
+			&msg,
 		)?;
 
 		Ok(final_sig)
@@ -689,6 +786,104 @@ impl Slate {
 		self.tx = final_tx;
 		Ok(())
 	}
+
+	/// builds a final transaction after the aggregated sig exchange
+	pub fn finalize_token_parent_tx<K>(
+		&mut self,
+		keychain: &K,
+		sec_key: &SecretKey,
+		with_validate: bool,
+	) -> Result<(), Error>
+	where
+		K: Keychain,
+	{
+		let kernel_offset = &self.tx.offset;
+
+		self.check_fees()?;
+
+		let mut final_tx = self.tx.clone();
+
+		let secp = keychain.secp();
+
+		// build the final excess based on final tx and offset
+		let final_excess = {
+			// sum the input/output commitments on the final tx
+			let overage = final_tx.fee() as i64;
+			let tx_excess = final_tx.sum_commitments(overage)?;
+
+			// subtract the kernel_excess (built from kernel_offset)
+			let offset_excess = secp.commit(0, kernel_offset.secret_key(secp)?)?;
+			secp.commit_sum(vec![tx_excess], vec![offset_excess])?
+		};
+		let pubkey = final_excess.to_pubkey(&secp)?;
+
+		let sig = aggsig::sign_single(secp, &self.msg_to_sign()?, sec_key, None, Some(&pubkey))?;
+
+		// update the tx kernel to reflect the offset excess and sig
+		assert_eq!(final_tx.kernels().len(), 1);
+		final_tx.kernels_mut()[0].excess = final_excess.clone();
+		final_tx.kernels_mut()[0].excess_sig = sig;
+
+		// confirm the kernel verifies successfully before proceeding
+		debug!("Validating final transaction");
+		final_tx.kernels()[0].verify()?;
+
+		// confirm the overall transaction is valid (including the updated kernel)
+		// accounting for tx weight limits
+		if with_validate {
+			let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
+			let _ = final_tx.validate(Weighting::AsTransaction, verifier_cache)?;
+		}
+
+		self.tx = final_tx;
+		Ok(())
+	}
+
+	/// builds a final transaction after the aggregated sig exchange
+	fn finalize_token_transaction<K>(
+		&mut self,
+		keychain: &K,
+		final_sig: &secp::Signature,
+	) -> Result<(), Error>
+	where
+		K: Keychain,
+	{
+		self.check_fees()?;
+
+		let token_type = TokenKey::from_hex(self.token_type.clone().unwrap().as_str())?;
+
+		let mut final_tx = self.tx.clone();
+
+		// build the final excess based on final tx and offset
+		let final_excess = {
+			let mut token_input_commit_map = final_tx.token_inputs_committed();
+			let mut token_output_commit_map = final_tx.token_outputs_committed();
+			let token_input_commit_vec = token_input_commit_map.entry(token_type).or_insert(vec![]);
+			let token_output_commit_vec =
+				token_output_commit_map.entry(token_type).or_insert(vec![]);
+			keychain.secp().commit_sum(
+				token_output_commit_vec.clone(),
+				token_input_commit_vec.clone(),
+			)?
+		};
+
+		// update the tx kernel to reflect the offset excess and sig
+		assert_eq!(final_tx.token_kernels().len(), 1);
+		final_tx.token_kernels_mut()[0].excess = final_excess.clone();
+		final_tx.token_kernels_mut()[0].excess_sig = final_sig.clone();
+
+		// confirm the kernel verifies successfully before proceeding
+		debug!("Validating final transaction");
+		final_tx.token_kernels_mut()[0].verify()?;
+
+		// confirm the overall transaction is valid (including the updated kernel)
+		// accounting for tx weight limits
+		let verifier_cache = Arc::new(RwLock::new(LruVerifierCache::new()));
+		let _ = final_tx.validate(Weighting::AsTransaction, verifier_cache)?;
+
+		self.tx = final_tx;
+		Ok(())
+	}
 }
 
 impl Serialize for Slate {
@@ -698,9 +893,9 @@ impl Serialize for Slate {
 	{
 		use serde::ser::Error;
 
-		let v2 = SlateV2::from(self);
+		let v3 = SlateV3::from(self);
 		match self.version_info.orig_version {
-			2 => v2.serialize(serializer),
+			3 => v3.serialize(serializer),
 			// left as a reminder
 			/*0 => {
 				let v1 = SlateV1::from(v2);
@@ -746,27 +941,28 @@ impl From<CbData> for CoinbaseV2 {
 // Current slate version to versioned conversions
 
 // Slate to versioned
-impl From<Slate> for SlateV2 {
-	fn from(slate: Slate) -> SlateV2 {
+impl From<Slate> for SlateV3 {
+	fn from(slate: Slate) -> SlateV3 {
 		let Slate {
 			num_participants,
 			id,
 			tx,
 			amount,
+			token_type,
 			fee,
 			height,
 			lock_height,
 			participant_data,
 			version_info,
 		} = slate;
-		let participant_data = map_vec!(participant_data, |data| ParticipantDataV2::from(data));
-		let version_info = VersionCompatInfoV2::from(&version_info);
-		let tx = TransactionV2::from(tx);
-		SlateV2 {
+		let participant_data = map_vec!(participant_data, |data| ParticipantDataV3::from(data));
+		let version_info = VersionCompatInfoV3::from(&version_info);
+		SlateV3 {
 			num_participants,
 			id,
 			tx,
 			amount,
+			token_type,
 			fee,
 			height,
 			lock_height,
@@ -776,13 +972,14 @@ impl From<Slate> for SlateV2 {
 	}
 }
 
-impl From<&Slate> for SlateV2 {
-	fn from(slate: &Slate) -> SlateV2 {
+impl From<&Slate> for SlateV3 {
+	fn from(slate: &Slate) -> SlateV3 {
 		let Slate {
 			num_participants,
 			id,
 			tx,
 			amount,
+			token_type,
 			fee,
 			height,
 			lock_height,
@@ -791,18 +988,20 @@ impl From<&Slate> for SlateV2 {
 		} = slate;
 		let num_participants = *num_participants;
 		let id = *id;
-		let tx = TransactionV2::from(tx);
+		let tx = tx.clone();
 		let amount = *amount;
+		let token_type = token_type.to_owned();
 		let fee = *fee;
 		let height = *height;
 		let lock_height = *lock_height;
-		let participant_data = map_vec!(participant_data, |data| ParticipantDataV2::from(data));
-		let version_info = VersionCompatInfoV2::from(version_info);
-		SlateV2 {
+		let participant_data = map_vec!(participant_data, |data| ParticipantDataV3::from(data));
+		let version_info = VersionCompatInfoV3::from(version_info);
+		SlateV3 {
 			num_participants,
 			id,
 			tx,
 			amount,
+			token_type,
 			fee,
 			height,
 			lock_height,
@@ -812,8 +1011,8 @@ impl From<&Slate> for SlateV2 {
 	}
 }
 
-impl From<&ParticipantData> for ParticipantDataV2 {
-	fn from(data: &ParticipantData) -> ParticipantDataV2 {
+impl From<&ParticipantData> for ParticipantDataV3 {
+	fn from(data: &ParticipantData) -> ParticipantDataV3 {
 		let ParticipantData {
 			id,
 			public_blind_excess,
@@ -828,7 +1027,7 @@ impl From<&ParticipantData> for ParticipantDataV2 {
 		let part_sig = *part_sig;
 		let message: Option<String> = message.as_ref().map(|t| String::from(&**t));
 		let message_sig = *message_sig;
-		ParticipantDataV2 {
+		ParticipantDataV3 {
 			id,
 			public_blind_excess,
 			public_nonce,
@@ -839,8 +1038,8 @@ impl From<&ParticipantData> for ParticipantDataV2 {
 	}
 }
 
-impl From<&VersionCompatInfo> for VersionCompatInfoV2 {
-	fn from(data: &VersionCompatInfo) -> VersionCompatInfoV2 {
+impl From<&VersionCompatInfo> for VersionCompatInfoV3 {
+	fn from(data: &VersionCompatInfo) -> VersionCompatInfoV3 {
 		let VersionCompatInfo {
 			version,
 			orig_version,
@@ -849,54 +1048,11 @@ impl From<&VersionCompatInfo> for VersionCompatInfoV2 {
 		let version = *version;
 		let orig_version = *orig_version;
 		let block_header_version = *block_header_version;
-		VersionCompatInfoV2 {
+		VersionCompatInfoV3 {
 			version,
 			orig_version,
 			block_header_version,
 		}
-	}
-}
-
-impl From<Transaction> for TransactionV2 {
-	fn from(tx: Transaction) -> TransactionV2 {
-		let Transaction { offset, body } = tx;
-		let body = TransactionBodyV2::from(&body);
-		TransactionV2 { offset, body }
-	}
-}
-
-impl From<&Transaction> for TransactionV2 {
-	fn from(tx: &Transaction) -> TransactionV2 {
-		let Transaction { offset, body } = tx;
-		let offset = offset.clone();
-		let body = TransactionBodyV2::from(body);
-		TransactionV2 { offset, body }
-	}
-}
-
-impl From<&TransactionBody> for TransactionBodyV2 {
-	fn from(body: &TransactionBody) -> TransactionBodyV2 {
-		let TransactionBody {
-			inputs,
-			outputs,
-			kernels,
-		} = body;
-
-		let inputs = map_vec!(inputs, |inp| InputV2::from(inp));
-		let outputs = map_vec!(outputs, |out| OutputV2::from(out));
-		let kernels = map_vec!(kernels, |kern| TxKernelV2::from(kern));
-		TransactionBodyV2 {
-			inputs,
-			outputs,
-			kernels,
-		}
-	}
-}
-
-impl From<&Input> for InputV2 {
-	fn from(input: &Input) -> InputV2 {
-		let Input { features, commit } = *input;
-		InputV2 { features, commit }
 	}
 }
 
@@ -935,13 +1091,14 @@ impl From<&TxKernel> for TxKernelV2 {
 }
 
 // Versioned to current slate
-impl From<SlateV2> for Slate {
-	fn from(slate: SlateV2) -> Slate {
-		let SlateV2 {
+impl From<SlateV3> for Slate {
+	fn from(slate: SlateV3) -> Slate {
+		let SlateV3 {
 			num_participants,
 			id,
 			tx,
 			amount,
+			token_type,
 			fee,
 			height,
 			lock_height,
@@ -956,6 +1113,7 @@ impl From<SlateV2> for Slate {
 			id,
 			tx,
 			amount,
+			token_type,
 			fee,
 			height,
 			lock_height,
@@ -965,9 +1123,9 @@ impl From<SlateV2> for Slate {
 	}
 }
 
-impl From<&ParticipantDataV2> for ParticipantData {
-	fn from(data: &ParticipantDataV2) -> ParticipantData {
-		let ParticipantDataV2 {
+impl From<&ParticipantDataV3> for ParticipantData {
+	fn from(data: &ParticipantDataV3) -> ParticipantData {
+		let ParticipantDataV3 {
 			id,
 			public_blind_excess,
 			public_nonce,
@@ -992,9 +1150,9 @@ impl From<&ParticipantDataV2> for ParticipantData {
 	}
 }
 
-impl From<&VersionCompatInfoV2> for VersionCompatInfo {
-	fn from(data: &VersionCompatInfoV2) -> VersionCompatInfo {
-		let VersionCompatInfoV2 {
+impl From<&VersionCompatInfoV3> for VersionCompatInfo {
+	fn from(data: &VersionCompatInfoV3) -> VersionCompatInfo {
+		let VersionCompatInfoV3 {
 			version,
 			orig_version,
 			block_header_version,
@@ -1006,71 +1164,6 @@ impl From<&VersionCompatInfoV2> for VersionCompatInfo {
 			version,
 			orig_version,
 			block_header_version,
-		}
-	}
-}
-
-impl From<TransactionV2> for Transaction {
-	fn from(tx: TransactionV2) -> Transaction {
-		let TransactionV2 { offset, body } = tx;
-		let body = TransactionBody::from(&body);
-		Transaction { offset, body }
-	}
-}
-
-impl From<&TransactionBodyV2> for TransactionBody {
-	fn from(body: &TransactionBodyV2) -> TransactionBody {
-		let TransactionBodyV2 {
-			inputs,
-			outputs,
-			kernels,
-		} = body;
-
-		let inputs = map_vec!(inputs, |inp| Input::from(inp));
-		let outputs = map_vec!(outputs, |out| Output::from(out));
-		let kernels = map_vec!(kernels, |kern| TxKernel::from(kern));
-		TransactionBody {
-			inputs,
-			outputs,
-			kernels,
-		}
-	}
-}
-
-impl From<&InputV2> for Input {
-	fn from(input: &InputV2) -> Input {
-		let InputV2 { features, commit } = *input;
-		Input { features, commit }
-	}
-}
-
-impl From<&OutputV2> for Output {
-	fn from(output: &OutputV2) -> Output {
-		let OutputV2 {
-			features,
-			commit,
-			proof,
-		} = *output;
-		Output {
-			features,
-			commit,
-			proof,
-		}
-	}
-}
-
-impl From<&TxKernelV2> for TxKernel {
-	fn from(kernel: &TxKernelV2) -> TxKernel {
-		let (fee, lock_height) = (kernel.fee, kernel.lock_height);
-		let features = match kernel.features {
-			CompatKernelFeatures::Plain => KernelFeatures::Plain { fee },
-			CompatKernelFeatures::Coinbase => KernelFeatures::Coinbase,
-			CompatKernelFeatures::HeightLocked => KernelFeatures::HeightLocked { fee, lock_height },
-		};
-		TxKernel {
-			features,
-			excess: kernel.excess,
-			excess_sig: kernel.excess_sig,
 		}
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2018 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,9 +14,6 @@
 //! Functions to restore a wallet's outputs from just the master seed
 
 use crate::api_impl::owner_updater::StatusMessage;
-use crate::grin_core::consensus::{valid_header_version, WEEK_HEIGHT};
-use crate::grin_core::core::HeaderVersion;
-use crate::grin_core::global;
 use crate::grin_core::libtx::proof;
 use crate::grin_keychain::{Identifier, Keychain, SwitchCommitmentType};
 use crate::grin_util::secp::key::SecretKey;
@@ -24,17 +21,19 @@ use crate::grin_util::secp::pedersen;
 use crate::grin_util::Mutex;
 use crate::internal::{keys, updater};
 use crate::types::*;
-use crate::{wallet_lock, Error, OutputCommitMapping};
+use crate::{wallet_lock, Error, TokenOutputCommitMapping};
 use std::cmp;
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 /// Utility struct for return values from below
-#[derive(Debug, Clone)]
-struct OutputResult {
+#[derive(Clone)]
+struct TokenOutputResult {
 	///
 	pub commit: pedersen::Commitment,
+	///
+	pub token_type: String,
 	///
 	pub key_id: Identifier,
 	///
@@ -48,7 +47,7 @@ struct OutputResult {
 	///
 	pub lock_height: u64,
 	///
-	pub is_coinbase: bool,
+	pub is_token_issue: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -63,48 +62,39 @@ struct RestoredTxStats {
 	pub num_outputs: usize,
 }
 
-fn identify_utxo_outputs<'a, K>(
+fn identify_utxo_token_outputs<'a, K>(
 	keychain: &K,
-	outputs: Vec<(pedersen::Commitment, pedersen::RangeProof, bool, u64, u64)>,
+	outputs: Vec<(
+		pedersen::Commitment,
+		pedersen::RangeProof,
+		String,
+		bool,
+		u64,
+		u64,
+	)>,
 	status_send_channel: &Option<Sender<StatusMessage>>,
 	percentage_complete: u8,
-) -> Result<Vec<OutputResult>, Error>
+) -> Result<Vec<TokenOutputResult>, Error>
 where
 	K: Keychain + 'a,
 {
-	let mut wallet_outputs: Vec<OutputResult> = Vec::new();
+	let mut wallet_outputs: Vec<TokenOutputResult> = Vec::new();
+
 	let msg = format!(
-		"Scanning {} outputs in the current VCash utxo set",
+		"Scanning {} token outputs in the current VCash utxo set",
 		outputs.len(),
 	);
 	if let Some(ref s) = status_send_channel {
 		let _ = s.send(StatusMessage::Scanning(msg, percentage_complete));
 	}
 
-	let legacy_builder = proof::LegacyProofBuilder::new(keychain);
 	let builder = proof::ProofBuilder::new(keychain);
-	let legacy_version = HeaderVersion(1);
 
 	for output in outputs.iter() {
-		let (commit, proof, is_coinbase, height, mmr_index) = output;
+		let (commit, proof, token_type, is_token_issue, height, mmr_index) = output;
 		// attempt to unwind message from the RP and get a value
 		// will fail if it's not ours
-		let info = {
-			// Before HF+2wk, try legacy rewind first
-			let info_legacy =
-				if valid_header_version(height.saturating_sub(2 * WEEK_HEIGHT), legacy_version) {
-					proof::rewind(keychain.secp(), &legacy_builder, *commit, None, *proof)?
-				} else {
-					None
-				};
-
-			// If legacy didn't work, try new rewind
-			if info_legacy.is_none() {
-				proof::rewind(keychain.secp(), &builder, *commit, None, *proof)?
-			} else {
-				info_legacy
-			}
-		};
+		let info = { proof::rewind(keychain.secp(), &builder, *commit, None, *proof)? };
 
 		let (amount, key_id, switch) = match info {
 			Some(i) => i,
@@ -113,15 +103,9 @@ where
 			}
 		};
 
-		let lock_height = if *is_coinbase {
-			*height + global::coinbase_maturity()
-		} else {
-			*height
-		};
-
 		let msg = format!(
-			"Output found: {:?}, amount: {:?}, key_id: {:?}, mmr_index: {},",
-			commit, amount, key_id, mmr_index,
+			"Token Output found: {:?}, token_type:{:?}, amount: {:?}, key_id: {:?}, mmr_index: {},",
+			commit, token_type, amount, key_id, mmr_index,
 		);
 
 		if let Some(ref s) = status_send_channel {
@@ -135,45 +119,46 @@ where
 			}
 		}
 
-		wallet_outputs.push(OutputResult {
+		wallet_outputs.push(TokenOutputResult {
 			commit: *commit,
+			token_type: token_type.clone(),
 			key_id: key_id.clone(),
 			n_child: key_id.to_path().last_path_index(),
 			value: amount,
 			height: *height,
-			lock_height: lock_height,
-			is_coinbase: *is_coinbase,
+			lock_height: *height,
+			is_token_issue: *is_token_issue,
 			mmr_index: *mmr_index,
 		});
 	}
 	Ok(wallet_outputs)
 }
 
-fn collect_chain_outputs<'a, C, K>(
+fn collect_chain_token_outputs<'a, C, K>(
 	keychain: &K,
 	client: C,
 	start_index: u64,
 	end_index: Option<u64>,
 	status_send_channel: &Option<Sender<StatusMessage>>,
-) -> Result<(Vec<OutputResult>, u64), Error>
+) -> Result<(Vec<TokenOutputResult>, u64), Error>
 where
 	C: NodeClient + 'a,
 	K: Keychain + 'a,
 {
 	let batch_size = 1000;
 	let mut start_index = start_index;
-	let mut result_vec: Vec<OutputResult> = vec![];
+	let mut result_vec: Vec<TokenOutputResult> = vec![];
 	let last_retrieved_return_index;
 	loop {
 		let (highest_index, last_retrieved_index, outputs) =
-			client.get_outputs_by_pmmr_index(start_index, end_index, batch_size)?;
+			client.get_token_outputs_by_pmmr_index(start_index, end_index, batch_size)?;
 		let perc_complete = cmp::min(
 			((last_retrieved_index as f64 / highest_index as f64) * 100.0) as u8,
 			99,
 		);
 
 		let msg = format!(
-			"Checking {} outputs, up to index {}. (Highest index: {})",
+			"Checking {} token outputs, up to index {}. (Highest index: {})",
 			outputs.len(),
 			highest_index,
 			last_retrieved_index,
@@ -182,7 +167,7 @@ where
 			let _ = s.send(StatusMessage::Scanning(msg, perc_complete));
 		}
 
-		result_vec.append(&mut identify_utxo_outputs(
+		result_vec.append(&mut identify_utxo_token_outputs(
 			keychain,
 			outputs.clone(),
 			status_send_channel,
@@ -199,12 +184,12 @@ where
 }
 
 ///
-fn restore_missing_output<'a, L, C, K>(
+fn restore_missing_token_output<'a, L, C, K>(
 	wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
 	keychain_mask: Option<&SecretKey>,
-	output: OutputResult,
+	output: TokenOutputResult,
 	found_parents: &mut HashMap<Identifier, u32>,
-	tx_stats: &mut Option<&mut HashMap<Identifier, RestoredTxStats>>,
+	tx_stats: &mut Option<&mut HashMap<Identifier, HashMap<String, RestoredTxStats>>>,
 ) -> Result<(), Error>
 where
 	L: WalletLCProvider<'a, C, K>,
@@ -220,58 +205,56 @@ where
 	if !found_parents.contains_key(&parent_key_id) {
 		found_parents.insert(parent_key_id.clone(), 0);
 		if let Some(ref mut s) = tx_stats {
-			s.insert(
-				parent_key_id.clone(),
-				RestoredTxStats {
-					log_id: batch.next_tx_log_id(&parent_key_id)?,
-					amount_credited: 0,
-					num_outputs: 0,
-				},
-			);
+			s.insert(parent_key_id.clone(), HashMap::new());
 		}
 	}
 
-	let log_id = if tx_stats.is_none() || output.is_coinbase {
+	let token_type = output.token_type.clone();
+
+	let log_id = if tx_stats.is_none() || output.is_token_issue {
 		let log_id = batch.next_tx_log_id(&parent_key_id)?;
-		let entry_type = match output.is_coinbase {
-			true => TxLogEntryType::ConfirmedCoinbase,
-			false => TxLogEntryType::TxReceived,
+		let entry_type = match output.is_token_issue {
+			true => TokenTxLogEntryType::TokenIssue,
+			false => TokenTxLogEntryType::TokenTxReceived,
 		};
-		let mut t = TxLogEntry::new(parent_key_id.clone(), entry_type, log_id);
+		let mut t = TokenTxLogEntry::new(parent_key_id.clone(), entry_type, log_id);
 		t.confirmed = true;
-		t.amount_credited = output.value;
-		t.num_outputs = 1;
+		t.token_type = token_type;
+		t.token_amount_credited = output.value;
+		t.num_token_outputs = 1;
 		t.update_confirmation_ts();
-		batch.save_tx_log_entry(t, &parent_key_id)?;
+		batch.save_token_tx_log_entry(t, &parent_key_id)?;
 		log_id
 	} else {
 		if let Some(ref mut s) = tx_stats {
-			let ts = s.get(&parent_key_id).unwrap().clone();
-			s.insert(
-				parent_key_id.clone(),
-				RestoredTxStats {
-					log_id: ts.log_id,
-					amount_credited: ts.amount_credited + output.value,
-					num_outputs: ts.num_outputs + 1,
-				},
-			);
+			let mut key_map = s.get(&parent_key_id).unwrap().clone();
+			let ts = key_map
+				.entry(token_type.clone())
+				.or_insert(RestoredTxStats {
+					log_id: batch.next_tx_log_id(&parent_key_id)?,
+					amount_credited: 0,
+					num_outputs: 0,
+				});
+			ts.num_outputs += 1;
+			ts.amount_credited += output.value;
 			ts.log_id
 		} else {
 			0
 		}
 	};
 
-	let _ = batch.save(OutputData {
+	let _ = batch.save_token(TokenOutputData {
 		root_key_id: parent_key_id.clone(),
 		key_id: output.key_id,
 		n_child: output.n_child,
 		mmr_index: Some(output.mmr_index),
 		commit: commit,
+		token_type: output.token_type,
 		value: output.value,
 		status: OutputStatus::Unspent,
 		height: output.height,
 		lock_height: output.lock_height,
-		is_coinbase: output.is_coinbase,
+		is_token_issue: output.is_token_issue,
 		tx_log_entry: Some(log_id),
 	});
 
@@ -285,10 +268,10 @@ where
 }
 
 ///
-fn cancel_tx_log_entry<'a, L, C, K>(
+fn cancel_token_tx_log_entry<'a, L, C, K>(
 	wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
 	keychain_mask: Option<&SecretKey>,
-	output: &OutputData,
+	output: &TokenOutputData,
 ) -> Result<(), Error>
 where
 	L: WalletLCProvider<'a, C, K>,
@@ -298,7 +281,7 @@ where
 	let parent_key_id = output.key_id.parent_path();
 	wallet_lock!(wallet_inst, w);
 	let updated_tx_entry = if output.tx_log_entry.is_some() {
-		let entries = updater::retrieve_txs(
+		let entries = updater::retrieve_token_txs(
 			&mut **w,
 			output.tx_log_entry.clone(),
 			None,
@@ -308,8 +291,12 @@ where
 		if entries.len() > 0 {
 			let mut entry = entries[0].clone();
 			match entry.tx_type {
-				TxLogEntryType::TxSent => entry.tx_type = TxLogEntryType::TxSentCancelled,
-				TxLogEntryType::TxReceived => entry.tx_type = TxLogEntryType::TxReceivedCancelled,
+				TokenTxLogEntryType::TokenTxSent => {
+					entry.tx_type = TokenTxLogEntryType::TokenTxSentCancelled
+				}
+				TokenTxLogEntryType::TokenTxReceived => {
+					entry.tx_type = TokenTxLogEntryType::TokenTxReceivedCancelled
+				}
 				_ => {}
 			}
 			Some(entry)
@@ -321,16 +308,16 @@ where
 	};
 	let mut batch = w.batch(keychain_mask)?;
 	if let Some(t) = updated_tx_entry {
-		batch.save_tx_log_entry(t, &parent_key_id)?;
+		batch.save_token_tx_log_entry(t, &parent_key_id)?;
 	}
 	batch.commit()?;
 	Ok(())
 }
 
-/// Check / repair wallet contents by scanning against chain
+/// Check / repair wallet contents
 /// assume wallet contents have been freshly updated with contents
 /// of latest block
-pub fn scan<'a, L, C, K>(
+pub fn token_scan<'a, L, C, K>(
 	wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
 	keychain_mask: Option<&SecretKey>,
 	delete_unconfirmed: bool,
@@ -345,7 +332,10 @@ where
 {
 	// First, get a definitive list of outputs we own from the chain
 	if let Some(ref s) = status_send_channel {
-		let _ = s.send(StatusMessage::Scanning("Starting UTXO scan".to_owned(), 0));
+		let _ = s.send(StatusMessage::Scanning(
+			"Starting Token UTXO scan".to_owned(),
+			0,
+		));
 	}
 	let (client, keychain) = {
 		wallet_lock!(wallet_inst, w);
@@ -353,9 +343,9 @@ where
 	};
 
 	// Retrieve the actual PMMR index range we're looking for
-	let pmmr_range = client.height_range_to_pmmr_indices(start_height, Some(end_height))?;
+	let pmmr_range = client.height_range_to_token_pmmr_indices(start_height, Some(end_height))?;
 
-	let (chain_outs, last_index) = collect_chain_outputs(
+	let (chain_outs, last_index) = collect_chain_token_outputs(
 		&keychain,
 		client,
 		pmmr_range.0,
@@ -363,7 +353,7 @@ where
 		status_send_channel,
 	)?;
 	let msg = format!(
-		"Identified {} wallet_outputs as belonging to this wallet",
+		"Identified {} token wallet_outputs as belonging to this wallet",
 		chain_outs.len(),
 	);
 
@@ -374,7 +364,8 @@ where
 	// Now, get all outputs owned by this wallet (regardless of account)
 	let wallet_outputs = {
 		wallet_lock!(wallet_inst, w);
-		updater::retrieve_outputs(&mut **w, keychain_mask, true, None, None)?
+		let res = updater::retrieve_token_outputs(&mut **w, keychain_mask, true, None, None)?;
+		res
 	};
 
 	let mut missing_outs = vec![];
@@ -401,7 +392,7 @@ where
 	for m in accidental_spend_outs.into_iter() {
 		let mut o = m.0;
 		let msg = format!(
-			"Output for {} with ID {} ({:?}) marked as spent but exists in UTXO set. \
+			"Token Output for {} with ID {} ({:?}) marked as spent but exists in UTXO set. \
 			 Marking unspent and cancelling any associated transaction log entries.",
 			o.value, o.key_id, m.1.commit,
 		);
@@ -410,10 +401,10 @@ where
 		}
 		o.status = OutputStatus::Unspent;
 		// any transactions associated with this should be cancelled
-		cancel_tx_log_entry(wallet_inst.clone(), keychain_mask, &o)?;
+		cancel_token_tx_log_entry(wallet_inst.clone(), keychain_mask, &o)?;
 		wallet_lock!(wallet_inst, w);
 		let mut batch = w.batch(keychain_mask)?;
-		batch.save(o)?;
+		batch.save_token(o)?;
 		batch.commit()?;
 	}
 
@@ -422,14 +413,14 @@ where
 	// Restore missing outputs, adding transaction for it back to the log
 	for m in missing_outs.into_iter() {
 		let msg = format!(
-				"Confirmed output for {} with ID {} ({:?}, index {}) exists in UTXO set but not in wallet. \
-				 Restoring.",
-				m.value, m.key_id, m.commit, m.mmr_index
-			);
+			"Confirmed token output: token type:{}  amount:{} with ID {} ({:?}) exists in UTXO set but not in wallet. \
+			 Restoring.",
+			m.token_type, m.value, m.key_id, m.commit,
+		);
 		if let Some(ref s) = status_send_channel {
 			let _ = s.send(StatusMessage::Scanning(msg, 99));
 		}
-		restore_missing_output(
+		restore_missing_token_output(
 			wallet_inst.clone(),
 			keychain_mask,
 			m,
@@ -443,7 +434,7 @@ where
 		for m in locked_outs.into_iter() {
 			let mut o = m.0;
 			let msg = format!(
-				"Confirmed output for {} with ID {} ({:?}) exists in UTXO set and is locked. \
+				"Confirmed token output for {} with ID {} ({:?}) exists in UTXO set and is locked. \
 				 Unlocking and cancelling associated transaction log entries.",
 				o.value, o.key_id, m.1.commit,
 			);
@@ -451,14 +442,14 @@ where
 				let _ = s.send(StatusMessage::Scanning(msg, 99));
 			}
 			o.status = OutputStatus::Unspent;
-			cancel_tx_log_entry(wallet_inst.clone(), keychain_mask, &o)?;
+			cancel_token_tx_log_entry(wallet_inst.clone(), keychain_mask, &o)?;
 			wallet_lock!(wallet_inst, w);
 			let mut batch = w.batch(keychain_mask)?;
-			batch.save(o)?;
+			batch.save_token(o)?;
 			batch.commit()?;
 		}
 
-		let unconfirmed_outs: Vec<&OutputCommitMapping> = wallet_outputs
+		let unconfirmed_outs: Vec<&TokenOutputCommitMapping> = wallet_outputs
 			.iter()
 			.filter(|o| o.output.status == OutputStatus::Unconfirmed)
 			.collect();
@@ -473,7 +464,7 @@ where
 			if let Some(ref s) = status_send_channel {
 				let _ = s.send(StatusMessage::Scanning(msg, 99));
 			}
-			cancel_tx_log_entry(wallet_inst.clone(), keychain_mask, &o)?;
+			cancel_token_tx_log_entry(wallet_inst.clone(), keychain_mask, &o)?;
 			wallet_lock!(wallet_inst, w);
 			let mut batch = w.batch(keychain_mask)?;
 			batch.delete(&o.key_id, &o.mmr_index)?;
@@ -508,7 +499,7 @@ where
 
 	if let Some(ref s) = status_send_channel {
 		let _ = s.send(StatusMessage::ScanningComplete(
-			"Scanning Complete".to_owned(),
+			"Token Scanning Complete".to_owned(),
 		));
 	}
 

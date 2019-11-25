@@ -25,9 +25,9 @@ use crate::keychain::{Identifier, Keychain};
 use crate::libwallet::api_impl::owner_updater::{start_updater_log_thread, StatusMessage};
 use crate::libwallet::api_impl::{owner, owner_updater};
 use crate::libwallet::{
-	AcctPathMapping, Error, ErrorKind, InitTxArgs, IssueInvoiceTxArgs, NodeClient,
-	NodeHeightResult, OutputCommitMapping, Slate, TxLogEntry, WalletInfo, WalletInst,
-	WalletLCProvider,
+	AcctPathMapping, Error, ErrorKind, InitTxArgs, IssueInvoiceTxArgs, IssueTokenArgs, NodeClient,
+	NodeHeightResult, OutputCommitMapping, Slate, TokenOutputCommitMapping, TokenTxLogEntry,
+	TxLogEntry, WalletInfo, WalletInst, WalletLCProvider,
 };
 use crate::util::secp::key::SecretKey;
 use crate::util::{from_hex, static_secp_instance, LoggingConfig, Mutex, ZeroingString};
@@ -391,6 +391,75 @@ where
 		)
 	}
 
+	/// Returns a list of token outputs from the active account in the wallet.
+	///
+	/// # Arguments
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
+	/// * `include_spent` - If `true`, outputs that have been marked as 'spent'
+	/// in the wallet will be returned. If `false`, spent outputs will omitted
+	/// from the results.
+	/// * `refresh_from_node` - If true, the wallet will attempt to contact
+	/// a node (via the [`NodeClient`](../grin_wallet_libwallet/types/trait.NodeClient.html)
+	/// provided during wallet instantiation). If `false`, the results will
+	/// contain output information that may be out-of-date (from the last time
+	/// the wallet's output set was refreshed against the node).
+	/// * `tx_id` - If `Some(i)`, only return the outputs associated with
+	/// the transaction log entry of id `i`.
+	///
+	/// # Returns
+	/// * `(bool, Vec<TokenOutputCommitMapping>)` - A tuple:
+	/// * The first `bool` element indicates whether the data was successfully
+	/// refreshed from the node (note this may be false even if the `refresh_from_node`
+	/// argument was set to `true`.
+	/// * The second element contains a vector of
+	/// [OutputCommitMapping](../grin_wallet_libwallet/types/struct.OutputCommitMapping.html)
+	/// of which each element is a mapping between the wallet's internal
+	/// [OutputData](../grin_wallet_libwallet/types/struct.Output.html)
+	/// and the Output commitment as identified in the chain's UTXO set
+	///
+	/// # Example
+	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
+	/// ```
+	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
+	///
+	/// let api_owner = Owner::new(wallet.clone());
+	/// let show_spent = false;
+	/// let update_from_node = true;
+	/// let tx_id = None;
+	///
+	/// let result = api_owner.retrieve_token_outputs(None, show_spent, update_from_node, tx_id);
+	///
+	/// if let Ok((was_updated, output_mappings)) = result {
+	///		//...
+	/// }
+	/// ```
+
+	pub fn retrieve_token_outputs(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		include_spent: bool,
+		refresh_from_node: bool,
+		tx_id: Option<u32>,
+	) -> Result<(bool, Vec<TokenOutputCommitMapping>), Error> {
+		let tx = {
+			let t = self.status_tx.lock();
+			t.clone()
+		};
+		let refresh_from_node = match self.updater_running.load(Ordering::Relaxed) {
+			true => false,
+			false => refresh_from_node,
+		};
+		owner::retrieve_token_outputs(
+			self.wallet_inst.clone(),
+			keychain_mask,
+			&tx,
+			include_spent,
+			refresh_from_node,
+			tx_id,
+		)
+	}
+
 	/// Returns a list of [Transaction Log Entries](../grin_wallet_libwallet/types/struct.TxLogEntry.html)
 	/// from the active account in the wallet.
 	///
@@ -472,6 +541,84 @@ where
 		Ok(res)
 	}
 
+	/// Returns a list of [Token Transaction Log Entries](../grin_wallet_libwallet/types/struct.TokenTxLogEntry.html)
+	/// from the active account in the wallet.
+	///
+	/// # Arguments
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
+	/// * `refresh_from_node` - If true, the wallet will attempt to contact
+	/// a node (via the [`NodeClient`](../grin_wallet_libwallet/types/trait.NodeClient.html)
+	/// provided during wallet instantiation). If `false`, the results will
+	/// contain transaction information that may be out-of-date (from the last time
+	/// the wallet's output set was refreshed against the node).
+	/// * `tx_id` - If `Some(i)`, only return the transactions associated with
+	/// the transaction log entry of id `i`.
+	/// * `tx_slate_id` - If `Some(uuid)`, only return transactions associated with
+	/// the given [`Slate`](../grin_wallet_libwallet/slate/struct.Slate.html) uuid.
+	///
+	/// # Returns
+	/// * `(bool, Vec<TokenTxLogEntry)` - A tuple:
+	/// * The first `bool` element indicates whether the data was successfully
+	/// refreshed from the node (note this may be false even if the `refresh_from_node`
+	/// argument was set to `true`.
+	/// * The second element contains the set of retrieved
+	/// [TokenTxLogEntry](../grin_wallet_libwallet/types/struct.TokenTxLogEntry.html)
+	///
+	/// # Example
+	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
+	/// ```
+	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
+	///
+	/// let api_owner = Owner::new(wallet.clone());
+	/// let update_from_node = true;
+	/// let tx_id = None;
+	/// let tx_slate_id = None;
+	///
+	/// // Return all TokenTxLogEntries
+	/// let result = api_owner.retrieve_token_txs(None, update_from_node, tx_id, tx_slate_id);
+	///
+	/// if let Ok((was_updated, tx_log_entries)) = result {
+	///		//...
+	/// }
+	/// `
+	pub fn retrieve_token_txs(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		refresh_from_node: bool,
+		tx_id: Option<u32>,
+		tx_slate_id: Option<Uuid>,
+	) -> Result<(bool, Vec<TokenTxLogEntry>), Error> {
+		let tx = {
+			let t = self.status_tx.lock();
+			t.clone()
+		};
+		let refresh_from_node = match self.updater_running.load(Ordering::Relaxed) {
+			true => false,
+			false => refresh_from_node,
+		};
+		let mut res = owner::retrieve_token_txs(
+			self.wallet_inst.clone(),
+			keychain_mask,
+			&tx,
+			refresh_from_node,
+			tx_id,
+			tx_slate_id,
+		)?;
+		if self.doctest_mode {
+			res.1 = res
+				.1
+				.into_iter()
+				.map(|mut t| {
+					t.confirmation_ts = Some(Utc.ymd(2019, 1, 15).and_hms(16, 1, 26));
+					t.creation_ts = Utc.ymd(2019, 1, 15).and_hms(16, 1, 26);
+					t
+				})
+				.collect();
+		}
+		Ok(res)
+	}
+
 	/// Returns summary information from the active account in the wallet.
 	///
 	/// # Arguments
@@ -532,6 +679,37 @@ where
 			refresh_from_node,
 			minimum_confirmations,
 		)
+	}
+
+	/// Initiates a new transaction as the token issuer, creating a new
+	/// [`Slate`](../grin_wallet_libwallet/slate/struct.Slate.html) object containing
+	/// the issuer's inputs, change outputs, issue token outputs and public signature data.
+	///
+	/// # Arguments
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
+	/// * `args` - [`IssueTokenArgs`](../grin_wallet_libwallet/types/struct.IssueTokenArgs.html),
+	/// transaction initialization arguments. See struct documentation for further detail.
+	///
+	/// # Returns
+	/// * a result containing:
+	/// * The transaction [Slate](../grin_wallet_libwallet/slate/struct.Slate.html),
+	/// which can be forwarded to the recieving party by any means.
+	/// ```
+	pub fn init_issue_token_tx(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		args: IssueTokenArgs,
+	) -> Result<Slate, Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		let client = w.w2n_client();
+		let current_height = client.get_chain_tip()?.0;
+		if current_height < global::support_token_height() {
+			return Err(ErrorKind::UnreachTokenSupportHeight.into());
+		}
+		let res = owner::init_issue_token_tx(&mut **w, keychain_mask, args, self.doctest_mode);
+		res
 	}
 
 	/// Initiates a new transaction as the sender, creating a new
@@ -619,6 +797,13 @@ where
 		let mut slate = {
 			let mut w_lock = self.wallet_inst.lock();
 			let w = w_lock.lc_provider()?.wallet_inst()?;
+			if args.token_type.is_some() {
+				let client = w.w2n_client();
+				let current_height = client.get_chain_tip()?.0;
+				if current_height < global::support_token_height() {
+					return Err(ErrorKind::UnreachTokenSupportHeight.into());
+				}
+			}
 			owner::init_send_tx(&mut **w, keychain_mask, args, self.doctest_mode)?
 		};
 		// Helper functionality. If send arguments exist, attempt to send

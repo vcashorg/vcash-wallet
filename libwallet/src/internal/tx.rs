@@ -23,7 +23,7 @@ use crate::grin_util::secp::key::SecretKey;
 use crate::grin_util::Mutex;
 use crate::internal::{selection, updater};
 use crate::slate::Slate;
-use crate::types::{Context, NodeClient, TxLogEntryType, WalletBackend};
+use crate::types::{Context, NodeClient, TokenTxLogEntryType, TxLogEntryType, WalletBackend};
 use crate::{Error, ErrorKind};
 
 // static for incrementing test UUIDs
@@ -36,6 +36,7 @@ lazy_static! {
 pub fn new_tx_slate<'a, T: ?Sized, C, K>(
 	wallet: &mut T,
 	amount: u64,
+	token_type: Option<String>,
 	num_participants: usize,
 	use_test_rng: bool,
 ) -> Result<Slate, Error>
@@ -55,6 +56,7 @@ where
 		*SLATE_COUNTER.lock() += 1;
 	}
 	slate.amount = amount;
+	slate.token_type = token_type;
 	slate.height = current_height;
 
 	if valid_header_version(current_height, HeaderVersion(1)) {
@@ -111,8 +113,49 @@ where
 		num_change_outputs,
 		selection_strategy_is_use_all,
 		parent_key_id,
+		0,
+		0,
 	)?;
 	Ok((total, fee))
+}
+
+pub fn fill_tx_to_slate<'a, T: ?Sized, C, K>(
+	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
+	slate: &mut Slate,
+	minimum_confirmations: u64,
+	max_outputs: usize,
+	num_change_outputs: usize,
+	selection_strategy_is_use_all: bool,
+	parent_key_id: &Identifier,
+	use_test_rng: bool,
+) -> Result<Context, Error>
+where
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	updater::refresh_outputs(wallet, keychain_mask, parent_key_id, false)?;
+
+	let mut context = selection::build_issue_token_tx(
+		wallet,
+		&wallet.keychain(keychain_mask)?,
+		keychain_mask,
+		slate,
+		minimum_confirmations,
+		max_outputs,
+		num_change_outputs,
+		selection_strategy_is_use_all,
+		parent_key_id.clone(),
+		use_test_rng,
+	)?;
+
+	let key_chain = wallet.keychain(keychain_mask)?;
+	slate.generate_offset(&key_chain, &mut context.sec_key, use_test_rng)?;
+
+	slate.finalize_token_parent_tx(&key_chain, &context.sec_key, true)?;
+
+	Ok(context)
 }
 
 /// Add inputs to the slate (effectively becoming the sender)
@@ -145,18 +188,32 @@ where
 	// according to plan
 	// This function is just a big helper to do all of that, in theory
 	// this process can be split up in any way
-	let mut context = selection::build_send_tx(
-		wallet,
-		&wallet.keychain(keychain_mask)?,
-		keychain_mask,
-		slate,
-		minimum_confirmations,
-		max_outputs,
-		num_change_outputs,
-		selection_strategy_is_use_all,
-		parent_key_id.clone(),
-		use_test_rng,
-	)?;
+	let mut context = match slate.token_type.is_some() {
+		true => selection::build_send_token_tx(
+			wallet,
+			&wallet.keychain(keychain_mask)?,
+			keychain_mask,
+			slate,
+			minimum_confirmations,
+			max_outputs,
+			num_change_outputs,
+			selection_strategy_is_use_all,
+			parent_key_id.clone(),
+			use_test_rng,
+		)?,
+		false => selection::build_send_tx(
+			wallet,
+			&wallet.keychain(keychain_mask)?,
+			keychain_mask,
+			slate,
+			minimum_confirmations,
+			max_outputs,
+			num_change_outputs,
+			selection_strategy_is_use_all,
+			parent_key_id.clone(),
+			use_test_rng,
+		)?,
+	};
 
 	// Generate a kernel offset and subtract from our context's secret key. Store
 	// the offset in the slate's transaction kernel, and adds our public key
@@ -164,6 +221,7 @@ where
 	let _ = slate.fill_round_1(
 		&wallet.keychain(keychain_mask)?,
 		&mut context.sec_key,
+		&context.token_sec_key,
 		&context.sec_nonce,
 		participant_id,
 		message,
@@ -175,6 +233,7 @@ where
 		let _ = slate.fill_round_2(
 			&wallet.keychain(keychain_mask)?,
 			&context.sec_key,
+			&context.token_sec_key,
 			&context.sec_nonce,
 			participant_id,
 		)?;
@@ -212,6 +271,7 @@ where
 	let _ = slate.fill_round_1(
 		&wallet.keychain(keychain_mask)?,
 		&mut context.sec_key,
+		&context.token_sec_key,
 		&context.sec_nonce,
 		1,
 		message,
@@ -223,6 +283,7 @@ where
 		let _ = slate.fill_round_2(
 			&wallet.keychain(keychain_mask)?,
 			&context.sec_key,
+			&context.token_sec_key,
 			&context.sec_nonce,
 			participant_id,
 		)?;
@@ -247,12 +308,18 @@ where
 	let _ = slate.fill_round_2(
 		&wallet.keychain(keychain_mask)?,
 		&context.sec_key,
+		&context.token_sec_key,
 		&context.sec_nonce,
 		participant_id,
 	)?;
 
+	let key_chain = wallet.keychain(keychain_mask)?;
+	if slate.token_type.is_some() {
+		slate.finalize_token_parent_tx(&key_chain, &context.sec_key, false)?;
+	}
+
 	// Final transaction can be built by anyone at this stage
-	slate.finalize(&wallet.keychain(keychain_mask)?)?;
+	slate.finalize(&key_chain)?;
 	Ok(())
 }
 
@@ -276,27 +343,71 @@ where
 		tx_id_string = tx_slate_id.to_string();
 	}
 	let tx_vec = updater::retrieve_txs(wallet, tx_id, tx_slate_id, Some(&parent_key_id), false)?;
-	if tx_vec.len() != 1 {
-		return Err(ErrorKind::TransactionDoesntExist(tx_id_string))?;
+	if tx_vec.len() == 1 {
+		let tx = tx_vec[0].clone();
+		if tx.tx_type != TxLogEntryType::TxSent && tx.tx_type != TxLogEntryType::TxReceived {
+			return Err(ErrorKind::TransactionNotCancellable(tx_id_string))?;
+		}
+		if tx.confirmed == true {
+			return Err(ErrorKind::TransactionNotCancellable(tx_id_string))?;
+		}
+		// get outputs associated with tx
+		let res = updater::retrieve_outputs(
+			wallet,
+			keychain_mask,
+			false,
+			Some(tx.id),
+			Some(&parent_key_id),
+		)?;
+		let outputs = res.iter().map(|m| m.output.clone()).collect();
+		updater::cancel_tx_and_outputs(wallet, keychain_mask, tx, outputs, parent_key_id)?;
+		return Ok(());
 	}
-	let tx = tx_vec[0].clone();
-	if tx.tx_type != TxLogEntryType::TxSent && tx.tx_type != TxLogEntryType::TxReceived {
-		return Err(ErrorKind::TransactionNotCancellable(tx_id_string))?;
+
+	let token_tx_vec =
+		updater::retrieve_token_txs(wallet, tx_id, tx_slate_id, Some(&parent_key_id), false)?;
+	if token_tx_vec.len() == 1 {
+		let tx = token_tx_vec[0].clone();
+		if tx.tx_type != TokenTxLogEntryType::TokenTxSent
+			&& tx.tx_type != TokenTxLogEntryType::TokenTxReceived
+		{
+			return Err(ErrorKind::TransactionNotCancellable(tx_id_string))?;
+		}
+		if tx.confirmed == true {
+			return Err(ErrorKind::TransactionNotCancellable(tx_id_string))?;
+		}
+		// get outputs associated with tx
+		let res = updater::retrieve_outputs(
+			wallet,
+			keychain_mask,
+			false,
+			Some(tx.id),
+			Some(&parent_key_id),
+		)?;
+		let outputs = res.iter().map(|m| m.output.clone()).collect();
+
+		// get token outputs associated with tx
+		let token_res = updater::retrieve_token_outputs(
+			wallet,
+			keychain_mask,
+			false,
+			Some(tx.id),
+			Some(&parent_key_id),
+		)?;
+		let token_outputs = token_res.iter().map(|m| m.output.clone()).collect();
+
+		updater::cancel_token_tx_and_outputs(
+			wallet,
+			keychain_mask,
+			tx,
+			outputs,
+			token_outputs,
+			parent_key_id,
+		)?;
+		return Ok(());
 	}
-	if tx.confirmed == true {
-		return Err(ErrorKind::TransactionNotCancellable(tx_id_string))?;
-	}
-	// get outputs associated with tx
-	let res = updater::retrieve_outputs(
-		wallet,
-		keychain_mask,
-		false,
-		Some(tx.id),
-		Some(&parent_key_id),
-	)?;
-	let outputs = res.iter().map(|m| m.output.clone()).collect();
-	updater::cancel_tx_and_outputs(wallet, keychain_mask, tx, outputs, parent_key_id)?;
-	Ok(())
+
+	return Err(ErrorKind::TransactionDoesntExist(tx_id_string))?;
 }
 
 /// Update the stored transaction (this update needs to happen when the TX is finalised)
@@ -312,30 +423,57 @@ where
 	K: Keychain + 'a,
 {
 	// finalize command
-	let tx_vec = updater::retrieve_txs(wallet, None, Some(slate.id), None, false)?;
-	let mut tx = None;
-	// don't want to assume this is the right tx, in case of self-sending
-	for t in tx_vec {
-		if t.tx_type == TxLogEntryType::TxSent && !is_invoiced {
-			tx = Some(t.clone());
-			break;
+	if slate.token_type.is_some() {
+		let tx_vec = updater::retrieve_token_txs(wallet, None, Some(slate.id), None, false)?;
+		let mut tx = None;
+		// don't want to assume this is the right tx, in case of self-sending
+		for t in tx_vec {
+			if t.tx_type == TokenTxLogEntryType::TokenTxSent && !is_invoiced {
+				tx = Some(t.clone());
+				break;
+			}
+			if t.tx_type == TokenTxLogEntryType::TokenTxReceived && is_invoiced {
+				tx = Some(t.clone());
+				break;
+			}
 		}
-		if t.tx_type == TxLogEntryType::TxReceived && is_invoiced {
-			tx = Some(t.clone());
-			break;
+		let mut tx = match tx {
+			Some(t) => t,
+			None => return Err(ErrorKind::TransactionDoesntExist(slate.id.to_string()))?,
+		};
+		wallet.store_tx(&format!("{}", tx.tx_slate_id.unwrap()), &slate.tx)?;
+		let parent_key = tx.parent_key_id.clone();
+		tx.kernel_excess = Some(slate.tx.body.kernels[0].excess);
+		let mut batch = wallet.batch(keychain_mask)?;
+		batch.save_token_tx_log_entry(tx, &parent_key)?;
+		batch.commit()?;
+		Ok(())
+	} else {
+		let tx_vec = updater::retrieve_txs(wallet, None, Some(slate.id), None, false)?;
+		let mut tx = None;
+		// don't want to assume this is the right tx, in case of self-sending
+		for t in tx_vec {
+			if t.tx_type == TxLogEntryType::TxSent && !is_invoiced {
+				tx = Some(t.clone());
+				break;
+			}
+			if t.tx_type == TxLogEntryType::TxReceived && is_invoiced {
+				tx = Some(t.clone());
+				break;
+			}
 		}
+		let mut tx = match tx {
+			Some(t) => t,
+			None => return Err(ErrorKind::TransactionDoesntExist(slate.id.to_string()))?,
+		};
+		wallet.store_tx(&format!("{}", tx.tx_slate_id.unwrap()), &slate.tx)?;
+		let parent_key = tx.parent_key_id.clone();
+		tx.kernel_excess = Some(slate.tx.body.kernels[0].excess);
+		let mut batch = wallet.batch(keychain_mask)?;
+		batch.save_tx_log_entry(tx, &parent_key)?;
+		batch.commit()?;
+		Ok(())
 	}
-	let mut tx = match tx {
-		Some(t) => t,
-		None => return Err(ErrorKind::TransactionDoesntExist(slate.id.to_string()))?,
-	};
-	wallet.store_tx(&format!("{}", tx.tx_slate_id.unwrap()), &slate.tx)?;
-	let parent_key = tx.parent_key_id.clone();
-	tx.kernel_excess = Some(slate.tx.body.kernels[0].excess);
-	let mut batch = wallet.batch(keychain_mask)?;
-	batch.save_tx_log_entry(tx, &parent_key)?;
-	batch.commit()?;
-	Ok(())
 }
 
 /// Update the transaction participant messages
@@ -349,18 +487,33 @@ where
 	C: NodeClient + 'a,
 	K: Keychain + 'a,
 {
-	let tx_vec = updater::retrieve_txs(wallet, None, Some(slate.id), None, false)?;
-	if tx_vec.is_empty() {
-		return Err(ErrorKind::TransactionDoesntExist(slate.id.to_string()))?;
+	if slate.token_type.is_some() {
+		let tx_vec = updater::retrieve_token_txs(wallet, None, Some(slate.id), None, false)?;
+		if tx_vec.is_empty() {
+			return Err(ErrorKind::TransactionDoesntExist(slate.id.to_string()))?;
+		}
+		let mut batch = wallet.batch(keychain_mask)?;
+		for mut tx in tx_vec.into_iter() {
+			tx.messages = Some(slate.participant_messages());
+			let parent_key = tx.parent_key_id.clone();
+			batch.save_token_tx_log_entry(tx, &parent_key)?;
+		}
+		batch.commit()?;
+		Ok(())
+	} else {
+		let tx_vec = updater::retrieve_txs(wallet, None, Some(slate.id), None, false)?;
+		if tx_vec.is_empty() {
+			return Err(ErrorKind::TransactionDoesntExist(slate.id.to_string()))?;
+		}
+		let mut batch = wallet.batch(keychain_mask)?;
+		for mut tx in tx_vec.into_iter() {
+			tx.messages = Some(slate.participant_messages());
+			let parent_key = tx.parent_key_id.clone();
+			batch.save_tx_log_entry(tx, &parent_key)?;
+		}
+		batch.commit()?;
+		Ok(())
 	}
-	let mut batch = wallet.batch(keychain_mask)?;
-	for mut tx in tx_vec.into_iter() {
-		tx.messages = Some(slate.participant_messages());
-		let parent_key = tx.parent_key_id.clone();
-		batch.save_tx_log_entry(tx, &parent_key)?;
-	}
-	batch.commit()?;
-	Ok(())
 }
 
 #[cfg(test)]

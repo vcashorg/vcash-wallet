@@ -71,9 +71,9 @@ pub fn start_updater_log_thread(
 					StatusMessage::UpdatingOutputs(s) => debug!("{}", s),
 					StatusMessage::UpdatingTransactions(s) => debug!("{}", s),
 					StatusMessage::FullScanWarn(s) => warn!("{}", s),
-					StatusMessage::Scanning(s, m) => {
+					StatusMessage::Scanning(s, _m) => {
 						debug!("{}", s);
-						warn!("Scanning - {}% complete", m);
+						//warn!("Scanning - {}% complete", m);
 					}
 					StatusMessage::ScanningComplete(s) => warn!("{}", s),
 					StatusMessage::UpdateWarning(s) => warn!("{}", s),

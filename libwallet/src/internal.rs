@@ -24,5 +24,6 @@
 pub mod keys;
 pub mod scan;
 pub mod selection;
+pub mod token_scan;
 pub mod tx;
 pub mod updater;

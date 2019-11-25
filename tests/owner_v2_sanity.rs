@@ -17,7 +17,7 @@ extern crate clap;
 #[macro_use]
 extern crate log;
 
-extern crate grin_wallet;
+extern crate vcash_wallet;
 
 use grin_wallet_impls::test_framework::{self, LocalWalletClient, WalletProxy};
 

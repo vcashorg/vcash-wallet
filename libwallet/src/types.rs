@@ -22,9 +22,10 @@ use crate::grin_core::core::{Output, Transaction, TxKernel};
 use crate::grin_core::libtx::{aggsig, secp_ser};
 use crate::grin_core::{global, ser};
 use crate::grin_keychain::{Identifier, Keychain};
+use crate::grin_util::logger::LoggingConfig;
 use crate::grin_util::secp::key::{PublicKey, SecretKey};
 use crate::grin_util::secp::{self, pedersen, Secp256k1};
-use crate::grin_util::{LoggingConfig, ZeroingString};
+use crate::grin_util::ZeroingString;
 use crate::slate::ParticipantMessages;
 use chrono::prelude::*;
 use failure::ResultExt;
@@ -178,11 +179,21 @@ where
 	/// Iterate over all output data stored by the backend
 	fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = OutputData> + 'a>;
 
+	/// Iterate over all output data stored by the backend
+	fn token_iter<'a>(&'a self) -> Box<dyn Iterator<Item = TokenOutputData> + 'a>;
+
 	/// Get output data by id
 	fn get(&self, id: &Identifier, mmr_index: &Option<u64>) -> Result<OutputData, Error>;
 
+	/// Get token output data by id
+	fn get_token(&self, id: &Identifier, mmr_index: &Option<u64>)
+		-> Result<TokenOutputData, Error>;
+
 	/// Get an (Optional) tx log entry by uuid
 	fn get_tx_log_entry(&self, uuid: &Uuid) -> Result<Option<TxLogEntry>, Error>;
+
+	/// Get an (Optional) token tx log entry by uuid
+	fn get_token_tx_log_entry(&self, uuid: &Uuid) -> Result<Option<TokenTxLogEntry>, Error>;
 
 	/// Retrieves the private context associated with a given slate id
 	fn get_private_context(
@@ -194,6 +205,9 @@ where
 
 	/// Iterate over all output data stored by the backend
 	fn tx_log_iter<'a>(&'a self) -> Box<dyn Iterator<Item = TxLogEntry> + 'a>;
+
+	/// Iterate over all output data stored by the backend
+	fn token_tx_log_iter<'a>(&'a self) -> Box<dyn Iterator<Item = TokenTxLogEntry> + 'a>;
 
 	/// Iterate over all stored account paths
 	fn acct_path_iter<'a>(&'a self) -> Box<dyn Iterator<Item = AcctPathMapping> + 'a>;
@@ -253,8 +267,21 @@ where
 	/// Iterate over all output data stored by the backend
 	fn iter(&self) -> Box<dyn Iterator<Item = OutputData>>;
 
+	/// Add or update data about an token output to the backend
+	fn save_token(&mut self, out: TokenOutputData) -> Result<(), Error>;
+
+	/// Gets output data by id
+	fn get_token(&self, id: &Identifier, mmr_index: &Option<u64>)
+		-> Result<TokenOutputData, Error>;
+
+	/// Iterate over all output data stored by the backend
+	fn token_iter(&self) -> Box<dyn Iterator<Item = TokenOutputData>>;
+
 	/// Delete data about an output from the backend
 	fn delete(&mut self, id: &Identifier, mmr_index: &Option<u64>) -> Result<(), Error>;
+
+	/// Delete data about an token output from the backend
+	fn token_delete(&mut self, id: &Identifier, mmr_index: &Option<u64>) -> Result<(), Error>;
 
 	/// Save last stored child index of a given parent
 	fn save_child_index(&mut self, parent_key_id: &Identifier, child_n: u32) -> Result<(), Error>;
@@ -281,6 +308,16 @@ where
 	/// save a tx log entry
 	fn save_tx_log_entry(&mut self, t: TxLogEntry, parent_id: &Identifier) -> Result<(), Error>;
 
+	/// Iterate over tx log data stored by the backend
+	fn token_tx_log_iter(&self) -> Box<dyn Iterator<Item = TokenTxLogEntry>>;
+
+	/// save a tx log entry
+	fn save_token_tx_log_entry(
+		&mut self,
+		t: TokenTxLogEntry,
+		parent_id: &Identifier,
+	) -> Result<(), Error>;
+
 	/// save an account label -> path mapping
 	fn save_acct_path(&mut self, mapping: AcctPathMapping) -> Result<(), Error>;
 
@@ -289,6 +326,9 @@ where
 
 	/// Save an output as locked in the backend
 	fn lock_output(&mut self, out: &mut OutputData) -> Result<(), Error>;
+
+	/// Save an output as locked in the backend
+	fn lock_token_output(&mut self, out: &mut TokenOutputData) -> Result<(), Error>;
 
 	/// Saves the private context associated with a slate id
 	fn save_private_context(
@@ -373,6 +413,49 @@ pub trait NodeClient: Send + Sync + Clone {
 	/// set of block heights
 	/// (start pmmr index, end pmmr index)
 	fn height_range_to_pmmr_indices(
+		&self,
+		start_height: u64,
+		end_height: Option<u64>,
+	) -> Result<(u64, u64), Error>;
+
+	/// retrieve a list of token outputs from the specified grin node
+	/// need "by_height" and "by_id" variants
+	fn get_token_outputs_from_node(
+		&self,
+		token_type: String,
+		wallet_outputs: Vec<pedersen::Commitment>,
+	) -> Result<HashMap<pedersen::Commitment, (String, String, u64, u64)>, Error>;
+
+	/// Get a list of token outputs from the node by traversing the UTXO
+	/// set in PMMR index order.
+	/// Returns
+	/// (last available output index, last insertion index retrieved,
+	/// outputs(commit, proof, is_token_issue, height, mmr_index))
+	fn get_token_outputs_by_pmmr_index(
+		&self,
+		start_height: u64,
+		end_height: Option<u64>,
+		max_outputs: u64,
+	) -> Result<
+		(
+			u64,
+			u64,
+			Vec<(
+				pedersen::Commitment,
+				pedersen::RangeProof,
+				String,
+				bool,
+				u64,
+				u64,
+			)>,
+		),
+		Error,
+	>;
+
+	/// Return the token pmmr indices representing the token outputs between a given
+	/// set of block heights
+	/// (start pmmr index, end pmmr index)
+	fn height_range_to_token_pmmr_indices(
 		&self,
 		start_height: u64,
 		end_height: Option<u64>,
@@ -499,6 +582,117 @@ impl OutputData {
 		}
 	}
 }
+
+/// Information about an token output that's being tracked by the wallet. Must be
+/// enough to reconstruct the commitment associated with the ouput when the
+/// root private key is known.
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, PartialOrd, Eq, Ord)]
+pub struct TokenOutputData {
+	/// Root key_id that the key for this output is derived from
+	pub root_key_id: Identifier,
+	/// Derived key for this output
+	pub key_id: Identifier,
+	/// How many derivations down from the root key
+	pub n_child: u32,
+	/// The actual commit, optionally stored
+	pub commit: Option<String>,
+	/// The Token type
+	pub token_type: String,
+	/// PMMR Index, used on restore in case of duplicate wallets using the same
+	/// key_id (2 wallets using same seed, for instance
+	#[serde(with = "secp_ser::opt_string_or_u64")]
+	pub mmr_index: Option<u64>,
+	/// Value of the output, necessary to rebuild the commitment
+	#[serde(with = "secp_ser::string_or_u64")]
+	pub value: u64,
+	/// Current status of the output
+	pub status: OutputStatus,
+	/// Height of the output
+	#[serde(with = "secp_ser::string_or_u64")]
+	pub height: u64,
+	/// Height we are locked until
+	#[serde(with = "secp_ser::string_or_u64")]
+	pub lock_height: u64,
+	/// Is this a coinbase output? Is it subject to coinbase locktime?
+	pub is_token_issue: bool,
+	/// Optional corresponding internal entry in tx entry log
+	pub tx_log_entry: Option<u32>,
+}
+
+impl ser::Writeable for TokenOutputData {
+	fn write<W: ser::Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		writer.write_bytes(&serde_json::to_vec(self).map_err(|_| ser::Error::CorruptedData)?)
+	}
+}
+
+impl ser::Readable for TokenOutputData {
+	fn read(reader: &mut dyn ser::Reader) -> Result<TokenOutputData, ser::Error> {
+		let data = reader.read_bytes_len_prefix()?;
+		serde_json::from_slice(&data[..]).map_err(|_| ser::Error::CorruptedData)
+	}
+}
+
+impl TokenOutputData {
+	/// Lock a given output to avoid conflicting use
+	pub fn lock(&mut self) {
+		self.status = OutputStatus::Locked;
+	}
+
+	/// How many confirmations has this output received?
+	/// If height == 0 then we are either Unconfirmed or the output was
+	/// cut-through
+	/// so we do not actually know how many confirmations this output had (and
+	/// never will).
+	pub fn num_confirmations(&self, current_height: u64) -> u64 {
+		if self.height > current_height {
+			return 0;
+		}
+		if self.status == OutputStatus::Unconfirmed {
+			0
+		} else {
+			// if an output has height n and we are at block n
+			// then we have a single confirmation (the block it originated in)
+			1 + (current_height - self.height)
+		}
+	}
+
+	/// Check if output is eligible to spend based on state and height and
+	/// confirmations
+	pub fn eligible_to_spend(&self, current_height: u64, minimum_confirmations: u64) -> bool {
+		if [OutputStatus::Spent, OutputStatus::Locked].contains(&self.status) {
+			return false;
+		} else if self.lock_height > current_height {
+			return false;
+		} else if self.status == OutputStatus::Unspent
+			&& self.num_confirmations(current_height) >= minimum_confirmations
+		{
+			return true;
+		} else if self.status == OutputStatus::Unconfirmed && minimum_confirmations == 0 {
+			return true;
+		} else {
+			return false;
+		}
+	}
+
+	/// Marks this output as unspent if it was previously unconfirmed
+	pub fn mark_unspent(&mut self) {
+		match self.status {
+			OutputStatus::Unconfirmed => self.status = OutputStatus::Unspent,
+			_ => (),
+		}
+	}
+
+	/// Mark an output as spent
+	pub fn mark_spent(&mut self) {
+		match self.status {
+			OutputStatus::Unspent => self.status = OutputStatus::Spent,
+			OutputStatus::Locked => self.status = OutputStatus::Spent,
+			_ => (),
+		}
+	}
+}
+
 /// Status of an output that's being tracked by the wallet. Can either be
 /// unconfirmed, spent, unspent, or locked (when it's been used to generate
 /// a transaction but we don't have confirmation that the transaction was
@@ -533,6 +727,8 @@ pub struct Context {
 	pub parent_key_id: Identifier,
 	/// Secret key (of which public is shared)
 	pub sec_key: SecretKey,
+	/// Token Secret key (of which public is shared)
+	pub token_sec_key: SecretKey,
 	/// Secret nonce (of which public is shared)
 	/// (basically a SecretKey)
 	pub sec_nonce: SecretKey,
@@ -542,6 +738,12 @@ pub struct Context {
 	/// store my inputs
 	/// Id, mmr_index (if known), amount
 	pub input_ids: Vec<(Identifier, Option<u64>, u64)>,
+	/// store my token outputs + amounts between invocations
+	/// Id, mmr_index (if known), amount
+	pub token_output_ids: Vec<(Identifier, Option<u64>, u64)>,
+	/// store my token inputs
+	/// Id, mmr_index (if known), amount
+	pub token_input_ids: Vec<(Identifier, Option<u64>, u64)>,
 	/// store the calculated fee
 	pub fee: u64,
 	/// keep track of the participant id
@@ -553,6 +755,7 @@ impl Context {
 	pub fn new(
 		secp: &secp::Secp256k1,
 		sec_key: SecretKey,
+		token_sec_key: SecretKey,
 		parent_key_id: &Identifier,
 		use_test_rng: bool,
 		participant_id: usize,
@@ -563,12 +766,15 @@ impl Context {
 		};
 		Context {
 			parent_key_id: parent_key_id.clone(),
-			sec_key: sec_key,
+			sec_key,
+			token_sec_key,
 			sec_nonce,
 			input_ids: vec![],
 			output_ids: vec![],
+			token_output_ids: vec![],
+			token_input_ids: vec![],
 			fee: 0,
-			participant_id: participant_id,
+			participant_id,
 		}
 	}
 }
@@ -596,6 +802,35 @@ impl Context {
 	/// Returns all stored input identifiers
 	pub fn get_inputs(&self) -> Vec<(Identifier, Option<u64>, u64)> {
 		self.input_ids.clone()
+	}
+
+	/// Tracks an output contributing to my excess value (if it needs to
+	/// be kept between invocations
+	pub fn add_token_output(
+		&mut self,
+		output_id: &Identifier,
+		mmr_index: &Option<u64>,
+		amount: u64,
+	) {
+		self.token_output_ids
+			.push((output_id.clone(), mmr_index.clone(), amount));
+	}
+
+	/// Returns all stored outputs
+	pub fn get_token_outputs(&self) -> Vec<(Identifier, Option<u64>, u64)> {
+		self.token_output_ids.clone()
+	}
+
+	/// Tracks IDs of my inputs into the transaction
+	/// be kept between invocations
+	pub fn add_token_input(&mut self, input_id: &Identifier, mmr_index: &Option<u64>, amount: u64) {
+		self.token_input_ids
+			.push((input_id.clone(), mmr_index.clone(), amount));
+	}
+
+	/// Returns all stored input identifiers
+	pub fn get_token_inputs(&self) -> Vec<(Identifier, Option<u64>, u64)> {
+		self.token_input_ids.clone()
 	}
 
 	/// Returns private key, private nonce
@@ -701,6 +936,28 @@ pub struct WalletInfo {
 	/// coinbases waiting for lock height
 	#[serde(with = "secp_ser::string_or_u64")]
 	pub amount_immature: u64,
+	/// amount currently spendable
+	#[serde(with = "secp_ser::string_or_u64")]
+	pub amount_currently_spendable: u64,
+	/// amount locked via previous transactions
+	#[serde(with = "secp_ser::string_or_u64")]
+	pub amount_locked: u64,
+	/// token info
+	pub token_infos: Vec<WalletTokenInfo>,
+}
+
+/// a contained wallet info struct, so automated tests can parse wallet info
+/// can add more fields here over time as needed
+#[derive(Serialize, Eq, PartialEq, Deserialize, Debug, Clone)]
+pub struct WalletTokenInfo {
+	/// token type
+	pub token_type: String,
+	/// amount awaiting finalization
+	#[serde(with = "secp_ser::string_or_u64")]
+	pub amount_awaiting_finalization: u64,
+	/// amount awaiting confirmation
+	#[serde(with = "secp_ser::string_or_u64")]
+	pub amount_awaiting_confirmation: u64,
 	/// amount currently spendable
 	#[serde(with = "secp_ser::string_or_u64")]
 	pub amount_currently_spendable: u64,
@@ -814,6 +1071,152 @@ impl TxLogEntry {
 			amount_debited: 0,
 			num_inputs: 0,
 			num_outputs: 0,
+			fee: None,
+			messages: None,
+			stored_tx: None,
+			kernel_excess: None,
+			kernel_lookup_min_height: None,
+		}
+	}
+
+	/// Given a vec of TX log entries, return credited + debited sums
+	pub fn sum_confirmed(txs: &Vec<TxLogEntry>) -> (u64, u64) {
+		txs.iter().fold((0, 0), |acc, tx| match tx.confirmed {
+			true => (acc.0 + tx.amount_credited, acc.1 + tx.amount_debited),
+			false => acc,
+		})
+	}
+
+	/// Update confirmation TS with now
+	pub fn update_confirmation_ts(&mut self) {
+		self.confirmation_ts = Some(Utc::now());
+	}
+}
+
+/// Types of transactions that can be contained within a Token TXLog entry
+#[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
+pub enum TokenTxLogEntryType {
+	/// Sent transaction that was rolled back by user
+	TokenIssue,
+	/// Outputs created when a transaction is received
+	TokenTxReceived,
+	/// Inputs locked + change outputs when a transaction is created
+	TokenTxSent,
+	/// Received token transaction that was rolled back by user
+	TokenTxReceivedCancelled,
+	/// Sent token transaction that was rolled back by user
+	TokenTxSentCancelled,
+}
+
+impl fmt::Display for TokenTxLogEntryType {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match *self {
+			TokenTxLogEntryType::TokenIssue => write!(f, "TokenIssue"),
+			TokenTxLogEntryType::TokenTxReceived => write!(f, "Received Token Tx"),
+			TokenTxLogEntryType::TokenTxSent => write!(f, "Sent Token Tx"),
+			TokenTxLogEntryType::TokenTxReceivedCancelled => {
+				write!(f, "Received Token Tx\n- Cancelled")
+			}
+			TokenTxLogEntryType::TokenTxSentCancelled => write!(f, "Sent Token Tx\n- Cancelled"),
+		}
+	}
+}
+
+/// Optional transaction information, recorded when an event happens
+/// to add or remove funds from a wallet. One Transaction log entry
+/// maps to one or many outputs
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TokenTxLogEntry {
+	/// BIP32 account path used for creating this tx
+	pub parent_key_id: Identifier,
+	/// Local id for this transaction (distinct from a slate transaction id)
+	pub id: u32,
+	/// Slate transaction this entry is associated with, if any
+	pub tx_slate_id: Option<Uuid>,
+	/// Transaction type (as above)
+	pub tx_type: TokenTxLogEntryType,
+	/// Time this tx entry was created
+	/// #[serde(with = "tx_date_format")]
+	pub creation_ts: DateTime<Utc>,
+	/// Time this tx was confirmed (by this wallet)
+	/// #[serde(default, with = "opt_tx_date_format")]
+	pub confirmation_ts: Option<DateTime<Utc>>,
+	/// Whether the inputs+outputs involved in this transaction have been
+	/// confirmed (In all cases either all outputs involved in a tx should be
+	/// confirmed, or none should be; otherwise there's a deeper problem)
+	pub confirmed: bool,
+	/// number of inputs involved in TX
+	pub num_inputs: usize,
+	/// number of outputs involved in TX
+	pub num_outputs: usize,
+	/// Amount credited via this transaction
+	#[serde(with = "secp_ser::string_or_u64")]
+	pub amount_credited: u64,
+	/// Amount debited via this transaction
+	#[serde(with = "secp_ser::string_or_u64")]
+	pub amount_debited: u64,
+	/// Amount debited via this transaction
+	pub token_type: String,
+	/// number of token inputs involved in TX
+	pub num_token_inputs: usize,
+	/// number of outputs involved in TX
+	pub num_token_outputs: usize,
+	/// token amount credited via this transaction
+	#[serde(with = "secp_ser::string_or_u64")]
+	pub token_amount_credited: u64,
+	/// token amount debited via this transaction
+	#[serde(with = "secp_ser::string_or_u64")]
+	pub token_amount_debited: u64,
+	/// Fee
+	#[serde(with = "secp_ser::opt_string_or_u64")]
+	pub fee: Option<u64>,
+	/// Message data, stored as json
+	pub messages: Option<ParticipantMessages>,
+	/// Location of the store transaction, (reference or resending)
+	pub stored_tx: Option<String>,
+	/// Associated kernel excess, for later lookup if necessary
+	#[serde(with = "secp_ser::option_commitment_serde")]
+	#[serde(default)]
+	pub kernel_excess: Option<pedersen::Commitment>,
+	/// Height reported when transaction was created, if lookup
+	/// of kernel is necessary
+	#[serde(default)]
+	pub kernel_lookup_min_height: Option<u64>,
+}
+
+impl ser::Writeable for TokenTxLogEntry {
+	fn write<W: ser::Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		writer.write_bytes(&serde_json::to_vec(self).map_err(|_| ser::Error::CorruptedData)?)
+	}
+}
+
+impl ser::Readable for TokenTxLogEntry {
+	fn read(reader: &mut dyn ser::Reader) -> Result<TokenTxLogEntry, ser::Error> {
+		let data = reader.read_bytes_len_prefix()?;
+		serde_json::from_slice(&data[..]).map_err(|_| ser::Error::CorruptedData)
+	}
+}
+
+impl TokenTxLogEntry {
+	/// Return a new blank with TS initialised with next entry
+	pub fn new(parent_key_id: Identifier, t: TokenTxLogEntryType, id: u32) -> Self {
+		TokenTxLogEntry {
+			parent_key_id: parent_key_id,
+			tx_type: t,
+			id: id,
+			tx_slate_id: None,
+			creation_ts: Utc::now(),
+			confirmation_ts: None,
+			confirmed: false,
+			amount_credited: 0,
+			amount_debited: 0,
+			num_inputs: 0,
+			num_outputs: 0,
+			token_type: "".to_owned(),
+			num_token_inputs: 0,
+			num_token_outputs: 0,
+			token_amount_credited: 0,
+			token_amount_debited: 0,
 			fee: None,
 			messages: None,
 			stored_tx: None,

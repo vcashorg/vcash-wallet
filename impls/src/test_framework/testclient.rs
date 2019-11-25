@@ -26,7 +26,7 @@ use crate::core::{pow, ser};
 use crate::keychain::Keychain;
 use crate::libwallet;
 use crate::libwallet::api_impl::foreign;
-use crate::libwallet::slate_versions::v2::SlateV2;
+use crate::libwallet::slate_versions::v3::SlateV3;
 use crate::libwallet::{
 	NodeClient, NodeVersionInfo, Slate, TxWrapper, WalletInst, WalletLCProvider,
 };
@@ -216,7 +216,7 @@ where
 			Some(w) => w,
 		};
 
-		let slate: SlateV2 = serde_json::from_str(&m.body).context(
+		let slate: SlateV3 = serde_json::from_str(&m.body).context(
 			libwallet::ErrorKind::ClientCallback("Error parsing TxWrapper".to_owned()),
 		)?;
 
@@ -239,7 +239,7 @@ where
 			sender_id: m.dest,
 			dest: m.sender_id,
 			method: m.method,
-			body: serde_json::to_string(&SlateV2::from(slate)).unwrap(),
+			body: serde_json::to_string(&SlateV3::from(slate)).unwrap(),
 		})
 	}
 
@@ -392,7 +392,7 @@ impl LocalWalletClient {
 			sender_id: self.id.clone(),
 			dest: dest.to_owned(),
 			method: "send_tx_slate".to_owned(),
-			body: serde_json::to_string(&SlateV2::from(slate)).unwrap(),
+			body: serde_json::to_string(&SlateV3::from(slate)).unwrap(),
 		};
 		{
 			let p = self.proxy_tx.lock();
@@ -403,7 +403,7 @@ impl LocalWalletClient {
 		let r = self.rx.lock();
 		let m = r.recv().unwrap();
 		trace!("Received send_tx_slate response: {:?}", m.clone());
-		let slate: SlateV2 = serde_json::from_str(&m.body).context(
+		let slate: SlateV3 = serde_json::from_str(&m.body).context(
 			libwallet::ErrorKind::ClientCallback("Parsing send_tx_slate response".to_owned()),
 		)?;
 		Ok(Slate::from(slate))
@@ -588,7 +588,7 @@ impl NodeClient for LocalWalletClient {
 		for out in o.outputs {
 			let is_coinbase = match out.output_type {
 				api::OutputType::Coinbase => true,
-				api::OutputType::Transaction => false,
+				_ => false,
 			};
 			api_outputs.push((
 				out.commit,
@@ -616,6 +616,147 @@ impl NodeClient for LocalWalletClient {
 			sender_id: self.id.clone(),
 			dest: self.node_url().to_owned(),
 			method: "height_range_to_pmmr_indices".to_owned(),
+			body: query_str,
+		};
+		{
+			let p = self.proxy_tx.lock();
+			p.send(m).context(libwallet::ErrorKind::ClientCallback(
+				"Get outputs within height range send".to_owned(),
+			))?;
+		}
+
+		let r = self.rx.lock();
+		let m = r.recv().unwrap();
+		let o: api::OutputListing = serde_json::from_str(&m.body).unwrap();
+		Ok((o.last_retrieved_index, o.highest_index))
+	}
+
+	/// Retrieve outputs from node
+	fn get_token_outputs_from_node(
+		&self,
+		token_type: String,
+		wallet_outputs: Vec<pedersen::Commitment>,
+	) -> Result<HashMap<pedersen::Commitment, (String, String, u64, u64)>, libwallet::Error> {
+		let query_params: Vec<String> = wallet_outputs
+			.iter()
+			.map(|commit| format!("id={}", util::to_hex(commit.as_ref().to_vec())))
+			.collect();
+		let query_str = format!("token_type={}&{}", token_type, query_params.join(","));
+		let m = WalletProxyMessage {
+			sender_id: self.id.clone(),
+			dest: self.node_url().to_owned(),
+			method: "get_token_outputs_from_node".to_owned(),
+			body: query_str,
+		};
+		{
+			let p = self.proxy_tx.lock();
+			p.send(m).context(libwallet::ErrorKind::ClientCallback(
+				"Get token outputs from node send".to_owned(),
+			))?;
+		}
+		let r = self.rx.lock();
+		let m = r.recv().unwrap();
+		let outputs: Vec<api::TokenOutput> = serde_json::from_str(&m.body).unwrap();
+		let mut api_outputs: HashMap<pedersen::Commitment, (String, String, u64, u64)> =
+			HashMap::new();
+		for out in outputs {
+			api_outputs.insert(
+				out.commit.commit(),
+				(
+					util::to_hex(out.commit.to_vec()),
+					out.token_type.to_hex(),
+					out.height,
+					out.mmr_index,
+				),
+			);
+		}
+		Ok(api_outputs)
+	}
+
+	fn get_token_outputs_by_pmmr_index(
+		&self,
+		start_index: u64,
+		end_index: Option<u64>,
+		max_outputs: u64,
+	) -> Result<
+		(
+			u64,
+			u64,
+			Vec<(
+				pedersen::Commitment,
+				pedersen::RangeProof,
+				String,
+				bool,
+				u64,
+				u64,
+			)>,
+		),
+		libwallet::Error,
+	> {
+		// start index, max
+		let mut query_str = format!("{},{}", start_index, max_outputs);
+		match end_index {
+			Some(e) => query_str = format!("{},{}", query_str, e),
+			None => query_str = format!("{},0", query_str),
+		};
+		let m = WalletProxyMessage {
+			sender_id: self.id.clone(),
+			dest: self.node_url().to_owned(),
+			method: "get_outputs_by_token_pmmr_index".to_owned(),
+			body: query_str,
+		};
+		{
+			let p = self.proxy_tx.lock();
+			p.send(m).context(libwallet::ErrorKind::ClientCallback(
+				"Get outputs from node by PMMR index send".to_owned(),
+			))?;
+		}
+
+		let r = self.rx.lock();
+		let m = r.recv().unwrap();
+		let o: api::OutputListing = serde_json::from_str(&m.body).unwrap();
+
+		let mut api_outputs: Vec<(
+			pedersen::Commitment,
+			pedersen::RangeProof,
+			String,
+			bool,
+			u64,
+			u64,
+		)> = Vec::new();
+
+		for out in o.outputs {
+			let is_token_issue = match out.output_type {
+				api::OutputType::TokenIsuue => true,
+				_ => false,
+			};
+			api_outputs.push((
+				out.commit,
+				out.range_proof().unwrap(),
+				out.token_type.unwrap(),
+				is_token_issue,
+				out.block_height.unwrap(),
+				out.mmr_index,
+			));
+		}
+		Ok((o.highest_index, o.last_retrieved_index, api_outputs))
+	}
+
+	fn height_range_to_token_pmmr_indices(
+		&self,
+		start_height: u64,
+		end_height: Option<u64>,
+	) -> Result<(u64, u64), libwallet::Error> {
+		// start index, max
+		let mut query_str = format!("{}", start_height);
+		match end_height {
+			Some(e) => query_str = format!("{},{}", query_str, e),
+			None => query_str = format!("{},0", query_str),
+		};
+		let m = WalletProxyMessage {
+			sender_id: self.id.clone(),
+			dest: self.node_url().to_owned(),
+			method: "height_range_to_token_pmmr_indices".to_owned(),
 			body: query_str,
 		};
 		{

@@ -34,20 +34,20 @@ dirs = "1.0.3"
 # grin_store = { git = "https://github.com/mimblewimble/grin", tag = "v2.1.0-beta.3" }
 
 # For bleeding edge
-grin_core = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
-grin_keychain = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
-grin_chain = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
-grin_util = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
-grin_api = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
-grin_store = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
+#grin_core = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
+#grin_keychain = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
+#grin_chain = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
+#grin_util = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
+#grin_api = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
+#grin_store = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
 
 # For local testing
-# grin_core = { path = "../../grin/core"}
-# grin_keychain = { path = "../../grin/keychain"}
-# grin_chain = { path = "../../grin/chain"}
-# grin_util = { path = "../../grin/util"}
-# grin_api = { path = "../../grin/api"}
-# grin_store = { path = "../../grin/store"}
+ grin_core = { path = "../../vcash/core"}
+ grin_keychain = { path = "../../vcash/keychain"}
+ grin_chain = { path = "../../vcash/chain"}
+ grin_util = { path = "../../vcash/util"}
+ grin_api = { path = "../../vcash/api"}
+ grin_store = { path = "../../vcash/store"}
 
 [dev-dependencies]
 pretty_assertions = "0.5.1"

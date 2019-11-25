@@ -21,7 +21,9 @@ use crate::error::{Error, ErrorKind};
 use crate::impls::{create_sender, KeybaseAllChannels, SlateGetter as _, SlateReceiver as _};
 use crate::impls::{PathToSlate, SlatePutter};
 use crate::keychain;
-use crate::libwallet::{InitTxArgs, IssueInvoiceTxArgs, NodeClient, WalletInst, WalletLCProvider};
+use crate::libwallet::{
+	InitTxArgs, IssueInvoiceTxArgs, IssueTokenArgs, NodeClient, WalletInst, WalletLCProvider,
+};
 use crate::util::secp::key::SecretKey;
 use crate::util::{Mutex, ZeroingString};
 use crate::{controller, display};
@@ -241,9 +243,63 @@ where
 	Ok(())
 }
 
+/// Arguments for account command
+pub struct IssueTokenTxArgs {
+	pub amount: u64,
+}
+
+pub fn issue_token<L, C, K>(
+	wallet: Arc<Mutex<Box<dyn WalletInst<'static, L, C, K>>>>,
+	keychain_mask: Option<&SecretKey>,
+	args: IssueTokenTxArgs,
+) -> Result<(), Error>
+where
+	L: WalletLCProvider<'static, C, K> + 'static,
+	C: NodeClient + 'static,
+	K: keychain::Keychain + 'static,
+{
+	controller::owner_single_use(wallet.clone(), keychain_mask, |api, m| {
+		let args = IssueTokenArgs {
+			acct_name: None,
+			amount: args.amount,
+		};
+
+		let result = api.init_issue_token_tx(m, args);
+		let slate = match result {
+			Ok(s) => {
+				info!(
+					"Issue token tx created: {} of {} created! fee:{})",
+					core::amount_to_hr_string(s.amount, false),
+					s.token_type.clone().unwrap(),
+					s.fee,
+				);
+				s
+			}
+			Err(e) => {
+				info!("Tx not created: {}", e);
+				return Err(e);
+			}
+		};
+
+		let result = api.post_tx(m, &slate.tx, false);
+		match result {
+			Ok(_) => {
+				info!("Tx sent ok",);
+				return Ok(());
+			}
+			Err(e) => {
+				error!("Tx sent fail: {}", e);
+				return Err(e);
+			}
+		}
+	})?;
+	Ok(())
+}
+
 /// Arguments for the send command
 pub struct SendArgs {
 	pub amount: u64,
+	pub token_type: Option<String>,
 	pub message: Option<String>,
 	pub minimum_confirmations: u64,
 	pub selection_strategy: String,
@@ -276,6 +332,7 @@ where
 					let init_args = InitTxArgs {
 						src_acct_name: None,
 						amount: args.amount,
+						token_type: args.token_type.clone(),
 						minimum_confirmations: args.minimum_confirmations,
 						max_outputs: args.max_outputs as u32,
 						num_change_outputs: args.change_outputs as u32,
@@ -292,6 +349,7 @@ where
 			let init_args = InitTxArgs {
 				src_acct_name: None,
 				amount: args.amount,
+				token_type: args.token_type.clone(),
 				minimum_confirmations: args.minimum_confirmations,
 				max_outputs: args.max_outputs as u32,
 				num_change_outputs: args.change_outputs as u32,
@@ -665,6 +723,15 @@ where
 		let res = api.node_height(m)?;
 		let (validated, outputs) = api.retrieve_outputs(m, g_args.show_spent, true, None)?;
 		display::outputs(&g_args.account, res.height, validated, outputs, dark_scheme)?;
+		let (token_validated, token_outputs) =
+			api.retrieve_token_outputs(m, g_args.show_spent, true, None)?;
+		display::token_outputs(
+			&g_args.account,
+			res.height,
+			token_validated,
+			token_outputs,
+			dark_scheme,
+		)?;
 		Ok(())
 	})?;
 	Ok(())
@@ -701,6 +768,18 @@ where
 			dark_scheme,
 		)?;
 
+		let (token_validated, token_txs) =
+			api.retrieve_token_txs(m, true, args.id, args.tx_slate_id)?;
+		let include_status = !args.id.is_some() && !args.tx_slate_id.is_some();
+		display::token_txs(
+			&g_args.account,
+			res.height,
+			token_validated,
+			&token_txs,
+			include_status,
+			dark_scheme,
+		)?;
+
 		// if given a particular transaction id or uuid, also get and display associated
 		// inputs/outputs and messages
 		let id = if args.id.is_some() {
@@ -709,8 +788,12 @@ where
 			if let Some(tx) = txs.iter().find(|t| t.tx_slate_id == args.tx_slate_id) {
 				Some(tx.id)
 			} else {
-				println!("Could not find a transaction matching given txid.\n");
-				None
+				if let Some(tx) = token_txs.iter().find(|t| t.tx_slate_id == args.tx_slate_id) {
+					Some(tx.id)
+				} else {
+					println!("Could not find a transaction matching given txid.\n");
+					None
+				}
 			}
 		} else {
 			None
@@ -722,6 +805,18 @@ where
 			// should only be one here, but just in case
 			for tx in txs {
 				display::tx_messages(&tx, dark_scheme)?;
+			}
+			let (_, token_outputs) = api.retrieve_token_outputs(m, true, false, id)?;
+			display::token_outputs(
+				&g_args.account,
+				res.height,
+				validated,
+				token_outputs,
+				dark_scheme,
+			)?;
+			// should only be one here, but just in case
+			for tx in token_txs {
+				display::token_tx_messages(&tx, dark_scheme)?;
 			}
 		}
 
@@ -736,15 +831,15 @@ pub struct PostArgs {
 	pub fluff: bool,
 }
 
-pub fn post<'a, L, C, K>(
-	wallet: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
+pub fn post<L, C, K>(
+	wallet: Arc<Mutex<Box<dyn WalletInst<'static, L, C, K>>>>,
 	keychain_mask: Option<&SecretKey>,
 	args: PostArgs,
 ) -> Result<(), Error>
 where
-	L: WalletLCProvider<'a, C, K>,
-	C: NodeClient + 'a,
-	K: keychain::Keychain + 'a,
+	L: WalletLCProvider<'static, C, K> + 'static,
+	C: NodeClient + 'static,
+	K: keychain::Keychain + 'static,
 {
 	let slate = PathToSlate((&args.input).into()).get_tx()?;
 

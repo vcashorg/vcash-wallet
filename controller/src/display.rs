@@ -15,7 +15,8 @@
 use crate::core::core::{self, amount_to_hr_string};
 use crate::core::global;
 use crate::libwallet::{
-	AcctPathMapping, Error, OutputCommitMapping, OutputStatus, TxLogEntry, WalletInfo,
+	AcctPathMapping, Error, OutputCommitMapping, OutputStatus, TokenOutputCommitMapping,
+	TokenTxLogEntry, TxLogEntry, WalletInfo,
 };
 use crate::util;
 use prettytable;
@@ -116,7 +117,108 @@ pub fn outputs(
 		println!(
 			"\nWARNING: Wallet failed to verify data. \
 			 The above is from local cache and possibly invalid! \
-			 (is your `grin server` offline or broken?)"
+			 (is your `vcash server` offline or broken?)"
+		);
+	}
+	Ok(())
+}
+
+/// Display outputs in a pretty way
+pub fn token_outputs(
+	account: &str,
+	cur_height: u64,
+	validated: bool,
+	outputs: Vec<TokenOutputCommitMapping>,
+	dark_background_color_scheme: bool,
+) -> Result<(), Error> {
+	let title = format!(
+		"Wallet Token Outputs - Account '{}' - Block Height: {}",
+		account, cur_height
+	);
+	println!();
+	if term::stdout().is_none() {
+		println!("Could not open terminal");
+		return Ok(());
+	}
+	let mut t = term::stdout().unwrap();
+	t.fg(term::color::MAGENTA).unwrap();
+	writeln!(t, "{}", title).unwrap();
+	t.reset().unwrap();
+
+	let mut table = table!();
+
+	table.set_titles(row![
+		bMG->"Output Commitment",
+		bMG->"Token Type",
+		bMG->"MMR Index",
+		bMG->"Block Height",
+		bMG->"Locked Until",
+		bMG->"Status",
+		bMG->"IssueToken?",
+		bMG->"# Confirms",
+		bMG->"Value",
+		bMG->"Tx"
+	]);
+
+	for m in outputs {
+		let commit = format!("{}", util::to_hex(m.commit.as_ref().to_vec()));
+		let index = match m.output.mmr_index {
+			None => "None".to_owned(),
+			Some(t) => t.to_string(),
+		};
+		let token_type = m.output.token_type.clone();
+		let height = format!("{}", m.output.height);
+		let lock_height = format!("{}", m.output.lock_height);
+		let is_token_issue = format!("{}", m.output.is_token_issue);
+
+		// Mark unconfirmed coinbase outputs as "Mining" instead of "Unconfirmed"
+		let status = format!("{}", m.output.status);
+
+		let num_confirmations = format!("{}", m.output.num_confirmations(cur_height));
+		let value = format!("{}", core::amount_to_hr_string(m.output.value, false));
+		let tx = match m.output.tx_log_entry {
+			None => "".to_owned(),
+			Some(t) => t.to_string(),
+		};
+
+		if dark_background_color_scheme {
+			table.add_row(row![
+				bFC->commit,
+				bFR->token_type,
+				bFB->index,
+				bFB->height,
+				bFB->lock_height,
+				bFR->status,
+				bFY->is_token_issue,
+				bFB->num_confirmations,
+				bFG->value,
+				bFC->tx,
+			]);
+		} else {
+			table.add_row(row![
+				bFD->commit,
+				bFB->token_type,
+				bFB->index,
+				bFB->height,
+				bFB->lock_height,
+				bFR->status,
+				bFD->is_token_issue,
+				bFB->num_confirmations,
+				bFG->value,
+				bFD->tx,
+			]);
+		}
+	}
+
+	table.set_format(*prettytable::format::consts::FORMAT_NO_COLSEP);
+	table.printstd();
+	println!();
+
+	if !validated {
+		println!(
+			"\nWARNING: Wallet failed to verify data. \
+			 The above is from local cache and possibly invalid! \
+			 (is your `vcash server` offline or broken?)"
 		);
 	}
 	Ok(())
@@ -265,11 +367,186 @@ pub fn txs(
 		println!(
 			"\nWARNING: Wallet failed to verify data. \
 			 The above is from local cache and possibly invalid! \
-			 (is your `grin server` offline or broken?)"
+			 (is your `vcash server` offline or broken?)"
 		);
 	}
 	Ok(())
 }
+
+/// Display transaction log in a pretty way
+pub fn token_txs(
+	account: &str,
+	cur_height: u64,
+	validated: bool,
+	txs: &Vec<TokenTxLogEntry>,
+	include_status: bool,
+	dark_background_color_scheme: bool,
+) -> Result<(), Error> {
+	let title = format!(
+		"Token Transaction Log - Account '{}' - Block Height: {}",
+		account, cur_height
+	);
+	println!();
+	if term::stdout().is_none() {
+		println!("Could not open terminal");
+		return Ok(());
+	}
+	let mut t = term::stdout().unwrap();
+	t.fg(term::color::MAGENTA).unwrap();
+	writeln!(t, "{}", title).unwrap();
+	t.reset().unwrap();
+
+	let mut table = table!();
+
+	table.set_titles(row![
+		bMG->"Id",
+		bMG->"Type",
+		bMG->"Shared Transaction Id",
+		bMG->"Creation Time",
+		bMG->"Confirmed?",
+		bMG->"Confirmation Time",
+		bMG->"Token Type",
+		bMG->"Num. \nToken Inputs",
+		bMG->"Num. \nToken Outputs",
+		bMG->"Amount \nToken Credited",
+		bMG->"Amount \nToken Debited",
+		bMG->"Num. \nInputs",
+		bMG->"Num. \nOutputs",
+		bMG->"Amount \nCredited",
+		bMG->"Amount \nDebited",
+		bMG->"Fee",
+		bMG->"Net \nDifference",
+		bMG->"Kernel",
+		bMG->"Tx \nData",
+	]);
+
+	for t in txs {
+		let id = format!("{}", t.id);
+		let slate_id = match t.tx_slate_id {
+			Some(m) => format!("{}", m),
+			None => "None".to_owned(),
+		};
+		let entry_type = format!("{}", t.tx_type);
+		let creation_ts = format!("{}", t.creation_ts.format("%Y-%m-%d %H:%M:%S"));
+		let confirmation_ts = match t.confirmation_ts {
+			Some(m) => format!("{}", m.format("%Y-%m-%d %H:%M:%S")),
+			None => "None".to_owned(),
+		};
+		let confirmed = format!("{}", t.confirmed);
+		let token_type = t.token_type.clone();
+		let num_token_inputs = format!("{}", t.num_token_inputs);
+		let num_token_outputs = format!("{}", t.num_token_outputs);
+		let amount_token_debited_str = core::amount_to_hr_string(t.token_amount_debited, true);
+		let amount_token_credited_str = core::amount_to_hr_string(t.token_amount_credited, true);
+		let num_inputs = format!("{}", t.num_inputs);
+		let num_outputs = format!("{}", t.num_outputs);
+		let amount_debited_str = core::amount_to_hr_string(t.amount_debited, true);
+		let amount_credited_str = core::amount_to_hr_string(t.amount_credited, true);
+		let fee = match t.fee {
+			Some(f) => format!("{}", core::amount_to_hr_string(f, true)),
+			None => "None".to_owned(),
+		};
+		let net_diff = if t.token_amount_credited >= t.token_amount_debited {
+			core::amount_to_hr_string(t.token_amount_credited - t.token_amount_debited, true)
+		} else {
+			format!(
+				"-{}",
+				core::amount_to_hr_string(t.token_amount_debited - t.token_amount_credited, true)
+			)
+		};
+		let tx_data = match t.stored_tx {
+			Some(_) => "Yes".to_owned(),
+			None => "None".to_owned(),
+		};
+		let kernel_excess = match t.kernel_excess {
+			Some(e) => util::to_hex(e.0.to_vec()),
+			None => "None".to_owned(),
+		};
+		if dark_background_color_scheme {
+			table.add_row(row![
+				bFC->id,
+				bFC->entry_type,
+				bFC->slate_id,
+				bFB->creation_ts,
+				bFC->confirmed,
+				bFB->confirmation_ts,
+				bFR->token_type,
+				bFC->num_token_inputs,
+				bFC->num_token_outputs,
+				bFG->amount_token_credited_str,
+				bFR->amount_token_debited_str,
+				bFC->num_inputs,
+				bFC->num_outputs,
+				bFG->amount_credited_str,
+				bFR->amount_debited_str,
+				bFR->fee,
+				bFY->net_diff,
+				bFB->kernel_excess,
+				bFb->tx_data,
+			]);
+		} else {
+			if t.confirmed {
+				table.add_row(row![
+					bFD->id,
+					bFb->entry_type,
+					bFD->slate_id,
+					bFB->creation_ts,
+					bFg->confirmed,
+					bFB->confirmation_ts,
+					bFD->token_type,
+					bFD->num_token_inputs,
+					bFD->num_token_outputs,
+					bFG->amount_token_credited_str,
+					bFD->amount_token_debited_str,
+					bFD->num_inputs,
+					bFD->num_outputs,
+					bFG->amount_credited_str,
+					bFD->amount_debited_str,
+					bFD->fee,
+					bFG->net_diff,
+					bFB->kernel_excess,
+					bFB->tx_data,
+				]);
+			} else {
+				table.add_row(row![
+					bFD->id,
+					bFb->entry_type,
+					bFD->slate_id,
+					bFB->creation_ts,
+					bFR->confirmed,
+					bFB->confirmation_ts,
+					bFD->token_type,
+					bFD->num_token_inputs,
+					bFD->num_token_outputs,
+					bFG->amount_token_credited_str,
+					bFD->amount_token_debited_str,
+					bFD->num_inputs,
+					bFD->num_outputs,
+					bFG->amount_credited_str,
+					bFD->amount_debited_str,
+					bFD->fee,
+					bFG->net_diff,
+					bFB->kernel_excess,
+					bFB->tx_data,
+				]);
+			}
+		}
+	}
+
+	table.set_format(*prettytable::format::consts::FORMAT_NO_COLSEP);
+	table.printstd();
+	println!();
+
+	if !validated && include_status {
+		println!(
+			"\nWARNING: Wallet failed to verify data. \
+			 The above is from local cache and possibly invalid! \
+			 (is your `vcash server` offline or broken?)"
+		);
+	}
+	Ok(())
+}
+
 /// Display summary info in a pretty way
 pub fn info(
 	account: &str,
@@ -347,6 +624,46 @@ pub fn info(
 			FG->amount_to_hr_string(wallet_info.amount_currently_spendable, false)
 		]);
 	};
+
+	for token_info in wallet_info.token_infos.iter() {
+		table.add_row(row![
+			Fw->"--------------------------------",
+			Fw->"-------------"
+		]);
+		table.add_row(row![
+			Fw->"--------------------------------",
+			Fw->"-------------"
+		]);
+
+		table.add_row(row![
+			bFG->"Token Type",
+			FG->token_info.token_type
+		]);
+		table.add_row(row![
+			bFG->"Total",
+			FG->amount_to_hr_string(token_info.amount_awaiting_confirmation+token_info.amount_awaiting_finalization+token_info.amount_currently_spendable, false)
+		]);
+		table.add_row(row![
+			bFY->format!("Awaiting Confirmation (< {})", wallet_info.minimum_confirmations),
+			FY->amount_to_hr_string(token_info.amount_awaiting_confirmation, false)
+		]);
+		table.add_row(row![
+			bFB->format!("Awaiting Finalization"),
+			FB->amount_to_hr_string(token_info.amount_awaiting_finalization, false)
+		]);
+		table.add_row(row![
+			Fr->"Locked by previous transaction",
+			Fr->amount_to_hr_string(token_info.amount_locked, false)
+		]);
+		table.add_row(row![
+			Fw->"--------------------------------",
+			Fw->"-------------"
+		]);
+		table.add_row(row![
+			bFG->"Currently Spendable",
+			FG->amount_to_hr_string(token_info.amount_currently_spendable, false)
+		]);
+	}
 	table.set_format(*prettytable::format::consts::FORMAT_NO_BORDER_LINE_SEPARATOR);
 	table.printstd();
 	println!();
@@ -354,7 +671,7 @@ pub fn info(
 		println!(
 			"\nWARNING: Wallet failed to verify data against a live chain. \
 			 The above is from local cache and only valid up to the given height! \
-			 (is your `grin server` offline or broken?)"
+			 (is your `vcash server` offline or broken?)"
 		);
 	}
 }
@@ -424,6 +741,87 @@ pub fn accounts(acct_mappings: Vec<AcctPathMapping>) {
 /// Display transaction log messages
 pub fn tx_messages(tx: &TxLogEntry, dark_background_color_scheme: bool) -> Result<(), Error> {
 	let title = format!("Transaction Messages - Transaction '{}'", tx.id,);
+	println!();
+	if term::stdout().is_none() {
+		println!("Could not open terminal");
+		return Ok(());
+	}
+	let mut t = term::stdout().unwrap();
+	t.fg(term::color::MAGENTA).unwrap();
+	writeln!(t, "{}", title).unwrap();
+	t.reset().unwrap();
+
+	let msgs = match tx.messages.clone() {
+		None => {
+			writeln!(t, "{}", "None").unwrap();
+			t.reset().unwrap();
+			return Ok(());
+		}
+		Some(m) => m.clone(),
+	};
+
+	if msgs.messages.is_empty() {
+		writeln!(t, "{}", "None").unwrap();
+		t.reset().unwrap();
+		return Ok(());
+	}
+
+	let mut table = table!();
+
+	table.set_titles(row![
+		bMG->"Participant Id",
+		bMG->"Message",
+		bMG->"Public Key",
+		bMG->"Signature",
+	]);
+
+	let secp = util::static_secp_instance();
+	let secp_lock = secp.lock();
+
+	for m in msgs.messages {
+		let id = format!("{}", m.id);
+		let public_key = format!(
+			"{}",
+			util::to_hex(m.public_key.serialize_vec(&secp_lock, true).to_vec())
+		);
+		let message = match m.message {
+			Some(m) => format!("{}", m),
+			None => "None".to_owned(),
+		};
+		let message_sig = match m.message_sig {
+			Some(s) => format!("{}", util::to_hex(s.serialize_der(&secp_lock))),
+			None => "None".to_owned(),
+		};
+		if dark_background_color_scheme {
+			table.add_row(row![
+				bFC->id,
+				bFC->message,
+				bFC->public_key,
+				bFB->message_sig,
+			]);
+		} else {
+			table.add_row(row![
+				bFD->id,
+				bFb->message,
+				bFD->public_key,
+				bFB->message_sig,
+			]);
+		}
+	}
+
+	table.set_format(*prettytable::format::consts::FORMAT_NO_COLSEP);
+	table.printstd();
+	println!();
+
+	Ok(())
+}
+
+/// Display token transaction log messages
+pub fn token_tx_messages(
+	tx: &TokenTxLogEntry,
+	dark_background_color_scheme: bool,
+) -> Result<(), Error> {
+	let title = format!("Token Transaction Messages - Transaction '{}'", tx.id,);
 	println!();
 	if term::stdout().is_none() {
 		println!("Could not open terminal");

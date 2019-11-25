@@ -86,12 +86,23 @@ subcommands:
             help: Also run the Foreign API
             long: run_foreign
             takes_value: false
+  - issue_token:
+      about: Issue Token
+      args:
+        - amount:
+            help: Number of tokens to issue, max value could be 18,000,000,000
+            index: 1
   - send:
       about: Builds a transaction to send coins and sends to the specified listener directly
       args:
         - amount:
             help: Number of coins to send with optional fraction, e.g. 12.423
             index: 1
+        - token:
+            help: Token type to send
+            short: k
+            long: token
+            takes_value: true
         - minimum_confirmations:
             help: Minimum number of confirmations required for an output to be spendable
             short: c
@@ -214,7 +225,7 @@ subcommands:
             help: Minimum number of confirmations required for an output to be spendable
             short: c
             long: min_conf
-            default_value: "10"
+            default_value: "1"
             takes_value: true
         - selection_strategy:
             help: Coin/Output selection strategy.

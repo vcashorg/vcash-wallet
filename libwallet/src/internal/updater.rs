@@ -31,9 +31,10 @@ use crate::grin_util::secp::pedersen;
 use crate::grin_util::static_secp_instance;
 use crate::internal::keys;
 use crate::types::{
-	NodeClient, OutputData, OutputStatus, TxLogEntry, TxLogEntryType, WalletBackend, WalletInfo,
+	NodeClient, OutputData, OutputStatus, TokenOutputData, TokenTxLogEntry, TokenTxLogEntryType,
+	TxLogEntry, TxLogEntryType, WalletBackend, WalletInfo, WalletTokenInfo,
 };
-use crate::{BlockFees, CbData, OutputCommitMapping};
+use crate::{BlockFees, CbData, OutputCommitMapping, TokenOutputCommitMapping};
 
 /// Retrieve all of the outputs (doesn't attempt to update from node)
 pub fn retrieve_outputs<'a, T: ?Sized, C, K>(
@@ -88,6 +89,59 @@ where
 	Ok(res)
 }
 
+/// Retrieve all of the token outputs (doesn't attempt to update from node)
+pub fn retrieve_token_outputs<'a, T: ?Sized, C, K>(
+	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
+	show_spent: bool,
+	tx_id: Option<u32>,
+	parent_key_id: Option<&Identifier>,
+) -> Result<Vec<TokenOutputCommitMapping>, Error>
+where
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	// just read the wallet here, no need for a write lock
+	let mut outputs = wallet
+		.token_iter()
+		.filter(|out| show_spent || out.status != OutputStatus::Spent)
+		.collect::<Vec<_>>();
+
+	// only include outputs with a given tx_id if provided
+	if let Some(id) = tx_id {
+		outputs = outputs
+			.into_iter()
+			.filter(|out| out.tx_log_entry == Some(id))
+			.collect::<Vec<_>>();
+	}
+
+	if let Some(k) = parent_key_id {
+		outputs = outputs
+			.iter()
+			.filter(|o| o.root_key_id == *k)
+			.map(|o| o.clone())
+			.collect();
+	}
+
+	outputs.sort_by_key(|out| out.n_child);
+	let keychain = wallet.keychain(keychain_mask)?;
+
+	let res = outputs
+		.into_iter()
+		.map(|output| {
+			let commit = match output.commit.clone() {
+				Some(c) => pedersen::Commitment::from_vec(util::from_hex(c).unwrap()),
+				None => keychain
+					.commit(output.value, &output.key_id, &SwitchCommitmentType::Regular)
+					.unwrap(), // TODO: proper support for different switch commitment schemes
+			};
+			TokenOutputCommitMapping { output, commit }
+		})
+		.collect();
+	Ok(res)
+}
+
 /// Retrieve all of the transaction entries, or a particular entry
 /// if `parent_key_id` is set, only return entries from that key
 pub fn retrieve_txs<'a, T: ?Sized, C, K>(
@@ -132,6 +186,51 @@ where
 	Ok(txs)
 }
 
+/// Retrieve all of the transaction entries, or a particular entry
+/// if `parent_key_id` is set, only return entries from that key
+pub fn retrieve_token_txs<'a, T: ?Sized, C, K>(
+	wallet: &mut T,
+	tx_id: Option<u32>,
+	tx_slate_id: Option<Uuid>,
+	parent_key_id: Option<&Identifier>,
+	outstanding_only: bool,
+) -> Result<Vec<TokenTxLogEntry>, Error>
+where
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	let mut txs: Vec<TokenTxLogEntry> = wallet
+		.token_tx_log_iter()
+		.filter(|tx_entry| {
+			let f_pk = match parent_key_id {
+				Some(k) => tx_entry.parent_key_id == *k,
+				None => true,
+			};
+			let f_tx_id = match tx_id {
+				Some(i) => tx_entry.id == i,
+				None => true,
+			};
+			let f_txs = match tx_slate_id {
+				Some(t) => tx_entry.tx_slate_id == Some(t),
+				None => true,
+			};
+			let f_outstanding = match outstanding_only {
+				true => {
+					!tx_entry.confirmed
+						&& (tx_entry.tx_type == TokenTxLogEntryType::TokenTxReceived
+							|| tx_entry.tx_type == TokenTxLogEntryType::TokenTxSent
+							|| tx_entry.tx_type == TokenTxLogEntryType::TokenIssue)
+				}
+				false => true,
+			};
+			f_pk && f_tx_id && f_txs && f_outstanding
+		})
+		.collect();
+	txs.sort_by_key(|tx| tx.creation_ts);
+	Ok(txs)
+}
+
 /// Refreshes the outputs in a wallet with the latest information
 /// from a node
 pub fn refresh_outputs<'a, T: ?Sized, C, K>(
@@ -147,6 +246,7 @@ where
 {
 	let height = wallet.w2n_client().get_chain_tip()?.0;
 	refresh_output_state(wallet, keychain_mask, height, parent_key_id, update_all)?;
+	refresh_token_output_state(wallet, keychain_mask, height, parent_key_id, update_all)?;
 	Ok(())
 }
 
@@ -172,9 +272,69 @@ where
 		.collect();
 
 	let tx_entries = retrieve_txs(wallet, None, None, Some(&parent_key_id), true)?;
+	let token_tx_entries = retrieve_token_txs(wallet, None, None, Some(&parent_key_id), true)?;
 
 	// Only select outputs that are actually involved in an outstanding transaction
 	let unspents: Vec<OutputData> = match update_all {
+		false => unspents
+			.into_iter()
+			.filter(|x| match x.tx_log_entry.as_ref() {
+				Some(t) => {
+					if let Some(_) = tx_entries.iter().find(|&te| te.id == *t) {
+						true
+					} else {
+						if let Some(_) = token_tx_entries.iter().find(|&te| te.id == *t) {
+							true
+						} else {
+							false
+						}
+					}
+				}
+				None => true,
+			})
+			.collect(),
+		true => unspents,
+	};
+
+	for out in unspents {
+		let commit = match out.commit.clone() {
+			Some(c) => pedersen::Commitment::from_vec(util::from_hex(c).unwrap()),
+			None => keychain
+				.commit(out.value, &out.key_id, &SwitchCommitmentType::Regular)
+				.unwrap(), // TODO: proper support for different switch commitment schemes
+		};
+		wallet_outputs.insert(commit, (out.key_id.clone(), out.mmr_index));
+	}
+	Ok(wallet_outputs)
+}
+
+/// build a local map of wallet outputs keyed by commit
+/// and a list of outputs we want to query the node for
+pub fn map_wallet_token_outputs<'a, T: ?Sized, C, K>(
+	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
+	parent_key_id: &Identifier,
+	update_all: bool,
+) -> Result<HashMap<String, HashMap<pedersen::Commitment, (Identifier, Option<u64>)>>, Error>
+where
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	let mut wallet_outputs: HashMap<
+		String,
+		HashMap<pedersen::Commitment, (Identifier, Option<u64>)>,
+	> = HashMap::new();
+	let keychain = wallet.keychain(keychain_mask)?;
+	let unspents: Vec<TokenOutputData> = wallet
+		.token_iter()
+		.filter(|x| x.root_key_id == *parent_key_id && x.status != OutputStatus::Spent)
+		.collect();
+
+	let tx_entries = retrieve_token_txs(wallet, None, None, Some(&parent_key_id), true)?;
+
+	// Only select outputs that are actually involved in an outstanding transaction
+	let unspents: Vec<TokenOutputData> = match update_all {
 		false => unspents
 			.into_iter()
 			.filter(|x| match x.tx_log_entry.as_ref() {
@@ -198,7 +358,10 @@ where
 				.commit(out.value, &out.key_id, &SwitchCommitmentType::Regular)
 				.unwrap(), // TODO: proper support for different switch commitment schemes
 		};
-		wallet_outputs.insert(commit, (out.key_id.clone(), out.mmr_index));
+		let token_maps = wallet_outputs
+			.entry(out.token_type)
+			.or_insert(HashMap::new());
+		token_maps.insert(commit, (out.key_id.clone(), out.mmr_index));
 	}
 	Ok(wallet_outputs)
 }
@@ -236,6 +399,55 @@ where
 		tx.tx_type = TxLogEntryType::TxReceivedCancelled;
 	}
 	batch.save_tx_log_entry(tx, parent_key_id)?;
+	batch.commit()?;
+	Ok(())
+}
+
+/// Cancel transaction and associated outputs
+pub fn cancel_token_tx_and_outputs<'a, T: ?Sized, C, K>(
+	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
+	tx: TokenTxLogEntry,
+	outputs: Vec<OutputData>,
+	token_outputs: Vec<TokenOutputData>,
+	parent_key_id: &Identifier,
+) -> Result<(), Error>
+where
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	let mut batch = wallet.batch(keychain_mask)?;
+
+	for mut o in outputs {
+		// unlock locked outputs
+		if o.status == OutputStatus::Unconfirmed {
+			batch.delete(&o.key_id, &o.mmr_index)?;
+		}
+		if o.status == OutputStatus::Locked {
+			o.status = OutputStatus::Unspent;
+			batch.save(o)?;
+		}
+	}
+
+	for mut o in token_outputs {
+		// unlock locked outputs
+		if o.status == OutputStatus::Unconfirmed {
+			batch.token_delete(&o.key_id, &o.mmr_index)?;
+		}
+		if o.status == OutputStatus::Locked {
+			o.status = OutputStatus::Unspent;
+			batch.save_token(o)?;
+		}
+	}
+	let mut tx = tx.clone();
+	if tx.tx_type == TokenTxLogEntryType::TokenTxSent {
+		tx.tx_type = TokenTxLogEntryType::TokenTxSentCancelled;
+	}
+	if tx.tx_type == TokenTxLogEntryType::TokenTxReceived {
+		tx.tx_type = TokenTxLogEntryType::TokenTxReceivedCancelled;
+	}
+	batch.save_token_tx_log_entry(tx, parent_key_id)?;
 	batch.commit()?;
 	Ok(())
 }
@@ -330,6 +542,68 @@ where
 	Ok(())
 }
 
+/// Apply refreshed API output data to the wallet
+pub fn apply_api_token_outputs<'a, T: ?Sized, C, K>(
+	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
+	wallet_outputs: &HashMap<pedersen::Commitment, (Identifier, Option<u64>)>,
+	api_outputs: &HashMap<pedersen::Commitment, (String, String, u64, u64)>,
+	height: u64,
+	parent_key_id: &Identifier,
+) -> Result<(), Error>
+where
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	// now for each commit, find the output in the wallet and the corresponding
+	// api output (if it exists) and refresh it in-place in the wallet.
+	// Note: minimizing the time we spend holding the wallet lock.
+	{
+		let last_confirmed_height = wallet.last_confirmed_height()?;
+		// If the server height is less than our confirmed height, don't apply
+		// these changes as the chain is syncing, incorrect or forking
+		if height < last_confirmed_height {
+			warn!(
+				"Not updating token outputs as the height of the node's chain \
+				 is less than the last reported wallet update height."
+			);
+			warn!("Please wait for sync on node to complete or fork to resolve and try again.");
+			return Ok(());
+		}
+		let mut batch = wallet.batch(keychain_mask)?;
+		for (commit, (id, mmr_index)) in wallet_outputs.iter() {
+			if let Ok(mut output) = batch.get_token(id, mmr_index) {
+				match api_outputs.get(&commit) {
+					Some(o) => {
+						if output.status == OutputStatus::Unconfirmed {
+							let tx = batch.token_tx_log_iter().find(|t| {
+								Some(t.id) == output.tx_log_entry
+									&& t.parent_key_id == *parent_key_id
+							});
+							if let Some(mut t) = tx {
+								t.update_confirmation_ts();
+								t.confirmed = true;
+								batch.save_token_tx_log_entry(t, &parent_key_id)?;
+							}
+						}
+						output.height = o.2;
+						output.mark_unspent();
+					}
+					None => output.mark_spent(),
+				};
+				batch.save_token(output)?;
+			}
+		}
+
+		{
+			batch.save_last_confirmed_height(parent_key_id, height)?;
+		}
+		batch.commit()?;
+	}
+	Ok(())
+}
+
 /// Builds a single api query to retrieve the latest output data from the node.
 /// So we can refresh the local wallet outputs.
 fn refresh_output_state<'a, T: ?Sized, C, K>(
@@ -364,6 +638,48 @@ where
 		height,
 		parent_key_id,
 	)?;
+	clean_old_unconfirmed(wallet, keychain_mask, height)?;
+	Ok(())
+}
+
+/// Builds a single api query to retrieve the latest token output data from the node.
+/// So we can refresh the local wallet token outputs.
+fn refresh_token_output_state<'a, T: ?Sized, C, K>(
+	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
+	height: u64,
+	parent_key_id: &Identifier,
+	update_all: bool,
+) -> Result<(), Error>
+where
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	debug!("Refreshing wallet token outputs");
+
+	// build a local map of wallet outputs keyed by commit
+	// and a list of outputs we want to query the node for
+	let wallet_outputs =
+		map_wallet_token_outputs(wallet, keychain_mask, parent_key_id, update_all)?;
+
+	for (token_type, token_outputs) in wallet_outputs.iter() {
+		debug!("Refreshing wallet token outputs for:{}", token_type);
+		let wallet_output_keys = token_outputs.keys().map(|commit| commit.clone()).collect();
+
+		let api_outputs = wallet
+			.w2n_client()
+			.get_token_outputs_from_node(token_type.clone(), wallet_output_keys)?;
+		apply_api_token_outputs(
+			wallet,
+			keychain_mask,
+			&token_outputs,
+			&api_outputs,
+			height,
+			parent_key_id,
+		)?;
+	}
+
 	clean_old_unconfirmed(wallet, keychain_mask, height)?;
 	Ok(())
 }
@@ -451,6 +767,48 @@ where
 		}
 	}
 
+	let mut token_infos: HashMap<String, WalletTokenInfo> = HashMap::new();
+	let token_outputs = wallet
+		.token_iter()
+		.filter(|out| out.root_key_id == *parent_key_id);
+	for out in token_outputs {
+		let token_info = token_infos
+			.entry(out.token_type.clone())
+			.or_insert(WalletTokenInfo {
+				token_type: out.token_type.clone(),
+				amount_awaiting_finalization: 0,
+				amount_awaiting_confirmation: 0,
+				amount_locked: 0,
+				amount_currently_spendable: 0,
+			});
+		match out.status {
+			OutputStatus::Unspent => {
+				if out.num_confirmations(current_height) < minimum_confirmations {
+					// Treat anything less than minimum confirmations as "unconfirmed".
+					token_info.amount_awaiting_confirmation += out.value;
+				} else {
+					token_info.amount_currently_spendable += out.value;
+				}
+			}
+			OutputStatus::Unconfirmed => {
+				if minimum_confirmations == 0 {
+					token_info.amount_awaiting_confirmation += out.value;
+				} else {
+					token_info.amount_awaiting_finalization += out.value;
+				}
+			}
+			OutputStatus::Locked => {
+				token_info.amount_locked += out.value;
+			}
+			OutputStatus::Spent => {}
+		}
+	}
+
+	let mut tokens = vec![];
+	for token_info in token_infos.values() {
+		tokens.push(token_info.clone());
+	}
+
 	Ok(WalletInfo {
 		last_confirmed_height: current_height,
 		minimum_confirmations,
@@ -460,6 +818,7 @@ where
 		amount_immature: immature_total,
 		amount_locked: locked_total,
 		amount_currently_spendable: unspent_total,
+		token_infos: tokens,
 	})
 }
 

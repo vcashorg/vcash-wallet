@@ -17,7 +17,7 @@ extern crate clap;
 #[macro_use]
 extern crate log;
 
-extern crate grin_wallet;
+extern crate vcash_wallet;
 
 use grin_wallet_api::ECDHPubkey;
 use grin_wallet_impls::test_framework::{self, LocalWalletClient, WalletProxy};
@@ -364,7 +364,7 @@ fn owner_v3_lifecycle() -> Result<(), grin_wallet_controller::Error> {
 		"id": 1,
 		"method": "finalize_invoice_tx",
 		"params": {
-			"slate": VersionedSlate::into_version(slate, SlateVersion::V2),
+			"slate": VersionedSlate::into_version(slate, SlateVersion::V3),
 		}
 	});
 	let res =

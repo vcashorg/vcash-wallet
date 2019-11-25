@@ -18,7 +18,18 @@ use crate::grin_core::libtx::secp_ser;
 use crate::grin_keychain::Identifier;
 use crate::grin_util::secp::pedersen;
 use crate::slate_versions::SlateVersion;
-use crate::types::OutputData;
+use crate::types::{OutputData, TokenOutputData};
+
+/// ISSUE TOKEN TX API Args
+#[derive(Clone, Serialize, Deserialize)]
+pub struct IssueTokenArgs {
+	/// The human readable account name from which to draw outputs
+	/// for the transaction, overriding whatever the active account is as set via the
+	/// [`set_active_account`](../grin_wallet_api/owner/struct.Owner.html#method.set_active_account) method.
+	pub acct_name: Option<String>,
+	/// amount to issue
+	pub amount: u64,
+}
 
 /// Send TX API Args
 // TODO: This is here to ensure the legacy V1 API remains intact
@@ -55,6 +66,8 @@ pub struct InitTxArgs {
 	#[serde(with = "secp_ser::string_or_u64")]
 	/// The amount to send, in nanogrins. (`1 G = 1_000_000_000nG`)
 	pub amount: u64,
+	/// The tokentype to send
+	pub token_type: Option<String>,
 	#[serde(with = "secp_ser::string_or_u64")]
 	/// The minimum number of confirmations an output
 	/// should have in order to be included in the transaction.
@@ -117,6 +130,7 @@ impl Default for InitTxArgs {
 		InitTxArgs {
 			src_acct_name: None,
 			amount: 0,
+			token_type: None,
 			minimum_confirmations: 10,
 			max_outputs: 500,
 			num_change_outputs: 1,
@@ -139,6 +153,8 @@ pub struct IssueInvoiceTxArgs {
 	/// The invoice amount in nanogrins. (`1 G = 1_000_000_000nG`)
 	#[serde(with = "secp_ser::string_or_u64")]
 	pub amount: u64,
+	/// The invoice token type
+	pub token_type: Option<String>,
 	/// Optional message, that will be signed
 	pub message: Option<String>,
 	/// Optionally set the output target slate version (acceptable
@@ -152,6 +168,7 @@ impl Default for IssueInvoiceTxArgs {
 		IssueInvoiceTxArgs {
 			dest_acct_name: None,
 			amount: 0,
+			token_type: None,
 			message: None,
 			target_slate_version: None,
 		}
@@ -183,6 +200,19 @@ impl BlockFees {
 pub struct OutputCommitMapping {
 	/// Output Data
 	pub output: OutputData,
+	/// The commit
+	#[serde(
+		serialize_with = "secp_ser::as_hex",
+		deserialize_with = "secp_ser::commitment_from_hex"
+	)]
+	pub commit: pedersen::Commitment,
+}
+
+/// Map TokenOutputdata to commits
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TokenOutputCommitMapping {
+	/// Output Data
+	pub output: TokenOutputData,
 	/// The commit
 	#[serde(
 		serialize_with = "secp_ser::as_hex",

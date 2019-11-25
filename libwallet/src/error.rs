@@ -85,6 +85,10 @@ pub enum ErrorKind {
 	#[fail(display = "Restore Error")]
 	Restore,
 
+	/// Callback implementation error conversion
+	#[fail(display = "Token Restore Error")]
+	TokenRestore,
+
 	/// An error in the format of the JSON structures exchanged by the wallet
 	#[fail(display = "JSON format error: {}", _0)]
 	Format(String),
@@ -220,6 +224,10 @@ pub enum ErrorKind {
 	/// Tor Configuration Error
 	#[fail(display = "Tor Config Error: {}", _0)]
 	TorConfig(String),
+
+	/// Unreach Token Support Height
+	#[fail(display = "Can't deal token transaction util reach token support height")]
+	UnreachTokenSupportHeight,
 
 	/// Other
 	#[fail(display = "Generic error: {}", _0)]

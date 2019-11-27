@@ -563,7 +563,7 @@ pub fn info(
 
 	if dark_background_color_scheme {
 		table.add_row(row![
-			bFG->"Confirmed Total",
+			bFG->"Total",
 			FG->amount_to_hr_string(wallet_info.total, false)
 		]);
 		// Only dispay "Immature Coinbase" if we have related outputs in the wallet.

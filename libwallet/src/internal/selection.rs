@@ -945,10 +945,9 @@ where
 	all_elems.append(&mut token_elems);
 	all_elems.append(&mut elems);
 
+	slate.fee = fee;
 	let (blinding, token_blinding) =
 		slate.add_transaction_elements(keychain, &ProofBuilder::new(keychain), all_elems)?;
-
-	slate.fee = fee;
 
 	// Create our own private context
 	let mut context = Context::new(

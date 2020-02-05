@@ -870,17 +870,40 @@ where
 {
 	controller::owner_single_use(wallet.clone(), keychain_mask, |api, m| {
 		let (_, txs) = api.retrieve_txs(m, true, Some(args.id), None)?;
-		let stored_tx = api.get_stored_tx(m, &txs[0])?;
-		if stored_tx.is_none() {
-			error!(
-				"Transaction with id {} does not have transaction data. Not reposting.",
-				args.id
-			);
-			return Ok(());
+		let mut stored_tx = None;
+		if txs.len() > 0 {
+			stored_tx = api.get_stored_tx(m, &txs[0])?;
+			if stored_tx.is_none() {
+				error!(
+					"Transaction with id {} does not have transaction data. Not reposting.",
+					args.id
+				);
+				return Ok(());
+			}
 		}
+
+		let (_, token_txs) = api.retrieve_token_txs(m, true, Some(args.id), None)?;
+		if token_txs.len() > 0 {
+			stored_tx = api.get_stored_token_tx(m, &token_txs[0])?;
+			if stored_tx.is_none() {
+				error!(
+					"Transaction with id {} does not have transaction data. Not reposting.",
+					args.id
+				);
+				return Ok(());
+			}
+		}
+
 		match args.dump_file {
 			None => {
-				if txs[0].confirmed {
+				if txs.len() > 0 && txs[0].confirmed {
+					error!(
+						"Transaction with id {} is confirmed. Not reposting.",
+						args.id
+					);
+					return Ok(());
+				}
+				if token_txs.len() > 0 && token_txs[0].confirmed {
 					error!(
 						"Transaction with id {} is confirmed. Not reposting.",
 						args.id

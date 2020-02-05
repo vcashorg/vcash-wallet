@@ -420,6 +420,24 @@ where
 		))
 	}
 
+	fn get_stored_token_tx(&self, entry: &TokenTxLogEntry) -> Result<Option<Transaction>, Error> {
+		let filename = match entry.stored_tx.clone() {
+			Some(f) => f,
+			None => return Ok(None),
+		};
+		let path = path::Path::new(&self.data_file_dir)
+			.join(TX_SAVE_DIR)
+			.join(filename);
+		let tx_file = Path::new(&path).to_path_buf();
+		let mut tx_f = File::open(tx_file)?;
+		let mut content = String::new();
+		tx_f.read_to_string(&mut content)?;
+		let tx_bin = util::from_hex(content).unwrap();
+		Ok(Some(
+			ser::deserialize::<Transaction>(&mut &tx_bin[..], ser::ProtocolVersion(1)).unwrap(),
+		))
+	}
+
 	fn batch<'a>(
 		&'a mut self,
 		keychain_mask: Option<&SecretKey>,

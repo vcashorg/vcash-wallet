@@ -601,6 +601,19 @@ where
 	w.get_stored_tx(entry)
 }
 
+/// get stored tx
+pub fn get_stored_token_tx<'a, T: ?Sized, C, K>(
+	w: &T,
+	entry: &TokenTxLogEntry,
+) -> Result<Option<Transaction>, Error>
+where
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	w.get_stored_token_tx(entry)
+}
+
 /// Posts a transaction to the chain
 /// take a client impl instead of wallet so as not to have to lock the wallet
 pub fn post_tx<'a, C>(client: &C, tx: &Transaction, fluff: bool) -> Result<(), Error>

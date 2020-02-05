@@ -221,6 +221,9 @@ where
 	/// Retrieves a stored transaction from a TxLogEntry
 	fn get_stored_tx(&self, entry: &TxLogEntry) -> Result<Option<Transaction>, Error>;
 
+	/// Retrieves a stored token transaction from a TokenTxLogEntry
+	fn get_stored_token_tx(&self, entry: &TokenTxLogEntry) -> Result<Option<Transaction>, Error>;
+
 	/// Create a new write batch to update or remove output data
 	fn batch<'a>(
 		&'a mut self,

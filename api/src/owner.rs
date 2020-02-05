@@ -1270,6 +1270,52 @@ where
 		owner::get_stored_tx(&**w, tx_log_entry)
 	}
 
+	/// Retrieves the stored token transaction associated with a TokenTxLogEntry. Can be used even after the
+	/// transaction has completed.
+	///
+	/// # Arguments
+	///
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// being used.
+	/// * `tx_log_entry` - A [`TxLogEntry`](../grin_wallet_libwallet/types/struct.TxLogEntry.html)
+	///
+	/// # Returns
+	/// * Ok with the stored  [`Transaction`](../grin_core/core/transaction/struct.Transaction.html)
+	/// if successful
+	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
+	///
+	/// # Example
+	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
+	/// ```
+	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
+	///
+	/// let api_owner = Owner::new(wallet.clone());
+	/// let update_from_node = true;
+	/// let tx_id = None;
+	/// let tx_slate_id = None;
+	///
+	/// // Return all TokenTxLogEntries
+	/// let result = api_owner.retrieve_token_txs(None, update_from_node, tx_id, tx_slate_id);
+	///
+	/// if let Ok((was_updated, tx_log_entries)) = result {
+	///		let stored_tx = api_owner.get_stored_token_tx(None, &tx_log_entries[0]).unwrap();
+	///		//...
+	/// }
+	/// ```
+
+	// TODO: Should be accepting an id, not an entire entry struct
+	pub fn get_stored_token_tx(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		tx_log_entry: &TokenTxLogEntry,
+	) -> Result<Option<Transaction>, Error> {
+		let mut w_lock = self.wallet_inst.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		// Test keychain mask, to keep API consistent
+		let _ = w.keychain(keychain_mask)?;
+		owner::get_stored_token_tx(&**w, tx_log_entry)
+	}
+
 	/// Verifies all messages in the slate match their public keys.
 	///
 	/// The optional messages themselves are part of the `participant_data` field within the slate.

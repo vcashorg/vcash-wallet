@@ -836,7 +836,7 @@ where
 		}
 	};
 
-	let start_index = last_scanned_block.height.saturating_sub(100);
+	let start_index = last_scanned_block.height.saturating_sub(6);
 
 	if last_scanned_block.height == 0 {
 		let msg = format!("This wallet's contents has not been initialized with a full chain scan, performing scan now.

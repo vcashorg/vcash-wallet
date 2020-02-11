@@ -163,7 +163,7 @@ where
 		} else {
 			TokenTxLogEntryType::TokenTxSent
 		};
-		let mut t = TokenTxLogEntry::new(parent_key_id.clone(), token_tx_type, log_id);
+		let mut t = TokenTxLogEntry::new(parent_key_id.clone(), token_tx_type.clone(), log_id);
 		t.tx_slate_id = Some(slate_id.clone());
 		t.token_type = slate.token_type.clone().unwrap();
 		let filename = format!("{}.vcashtx", slate_id);
@@ -234,7 +234,7 @@ where
 				status: OutputStatus::Unconfirmed,
 				height: height,
 				lock_height: 0,
-				is_token_issue: false,
+				is_token_issue: (token_tx_type == TokenTxLogEntryType::TokenIssue),
 				tx_log_entry: Some(log_id),
 			})?;
 		}

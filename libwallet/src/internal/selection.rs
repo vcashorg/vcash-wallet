@@ -14,6 +14,7 @@
 
 //! Selection of inputs for building transactions
 
+use crate::address;
 use crate::error::{Error, ErrorKind};
 use crate::grin_core::core::amount_to_hr_string;
 use crate::grin_core::core::transaction::TokenKey;
@@ -27,6 +28,7 @@ use crate::grin_util::secp::key::{SecretKey, ZERO_KEY};
 use crate::internal::keys;
 use crate::slate::Slate;
 use crate::types::*;
+use crate::util::OnionV3Address;
 use std::collections::HashMap;
 
 /// Initialize a transaction on the sender side, returns a corresponding
@@ -164,15 +166,15 @@ where
 			TokenTxLogEntryType::TokenTxSent
 		};
 		let mut t = TokenTxLogEntry::new(parent_key_id.clone(), token_tx_type.clone(), log_id);
-		t.tx_slate_id = Some(slate_id.clone());
+		t.tx_slate_id = Some(slate_id);
 		t.token_type = slate.token_type.clone().unwrap();
 		let filename = format!("{}.vcashtx", slate_id);
 		t.stored_tx = Some(filename);
 		t.fee = Some(slate.fee);
+		t.ttl_cutoff_height = slate.ttl_cutoff_height;
 
-		match slate.calc_excess(&keychain) {
-			Ok(e) => t.kernel_excess = Some(e),
-			Err(_) => {}
+		if let Ok(e) = slate.calc_excess(&keychain) {
+			t.kernel_excess = Some(e)
 		}
 		t.kernel_lookup_min_height = Some(slate.height);
 
@@ -181,7 +183,7 @@ where
 		for id in lock_inputs {
 			let mut coin = batch.get(&id.0, &id.1).unwrap();
 			coin.tx_log_entry = Some(log_id);
-			amount_debited = amount_debited + coin.value;
+			amount_debited += coin.value;
 			batch.lock_output(&mut coin)?;
 		}
 		t.amount_debited = amount_debited;
@@ -191,12 +193,38 @@ where
 		for id in lock_token_inputs {
 			let mut coin = batch.get_token(&id.0, &id.1).unwrap();
 			coin.tx_log_entry = Some(log_id);
-			token_amount_debited = token_amount_debited + coin.value;
+			token_amount_debited += coin.value;
 			batch.lock_token_output(&mut coin)?;
 		}
 		t.token_amount_debited = token_amount_debited;
 
 		t.messages = messages;
+
+		// store extra payment proof info, if required
+		if let Some(ref p) = slate.payment_proof {
+			let sender_address_path = match context.payment_proof_derivation_index {
+				Some(p) => p,
+				None => {
+					return Err(ErrorKind::PaymentProof(
+						"Payment proof derivation index required".to_owned(),
+					)
+					.into());
+				}
+			};
+			let sender_key = address::address_from_derivation_path(
+				&keychain,
+				&parent_key_id,
+				sender_address_path,
+			)?;
+			let sender_address = OnionV3Address::from_private(&sender_key.0)?;
+			t.payment_proof = Some(StoredProofInfo {
+				receiver_address: p.receiver_address,
+				receiver_signature: p.receiver_signature,
+				sender_address: sender_address.to_ed25519()?,
+				sender_address_path,
+				sender_signature: None,
+			});
+		};
 
 		// write the output representing our change
 		for (id, _, _) in &context.get_outputs() {
@@ -230,7 +258,7 @@ where
 				commit: commit,
 				token_type: slate.token_type.clone().unwrap(),
 				mmr_index: None,
-				value: change_amount.clone(),
+				value: change_amount,
 				status: OutputStatus::Unconfirmed,
 				height: height,
 				lock_height: 0,
@@ -249,14 +277,14 @@ where
 		let mut batch = wallet.batch(keychain_mask)?;
 		let log_id = batch.next_tx_log_id(&parent_key_id)?;
 		let mut t = TxLogEntry::new(parent_key_id.clone(), TxLogEntryType::TxSent, log_id);
-		t.tx_slate_id = Some(slate_id.clone());
+		t.tx_slate_id = Some(slate_id);
 		let filename = format!("{}.vcashtx", slate_id);
 		t.stored_tx = Some(filename);
 		t.fee = Some(slate.fee);
+		t.ttl_cutoff_height = slate.ttl_cutoff_height;
 
-		match slate.calc_excess(&keychain) {
-			Ok(e) => t.kernel_excess = Some(e),
-			Err(_) => {}
+		if let Ok(e) = slate.calc_excess(&keychain) {
+			t.kernel_excess = Some(e)
 		}
 		t.kernel_lookup_min_height = Some(slate.height);
 
@@ -265,12 +293,38 @@ where
 		for id in lock_inputs {
 			let mut coin = batch.get(&id.0, &id.1).unwrap();
 			coin.tx_log_entry = Some(log_id);
-			amount_debited = amount_debited + coin.value;
+			amount_debited += coin.value;
 			batch.lock_output(&mut coin)?;
 		}
 
 		t.amount_debited = amount_debited;
 		t.messages = messages;
+
+		// store extra payment proof info, if required
+		if let Some(ref p) = slate.payment_proof {
+			let sender_address_path = match context.payment_proof_derivation_index {
+				Some(p) => p,
+				None => {
+					return Err(ErrorKind::PaymentProof(
+						"Payment proof derivation index required".to_owned(),
+					)
+					.into());
+				}
+			};
+			let sender_key = address::address_from_derivation_path(
+				&keychain,
+				&parent_key_id,
+				sender_address_path,
+			)?;
+			let sender_address = OnionV3Address::from_private(&sender_key.0)?;
+			t.payment_proof = Some(StoredProofInfo {
+				receiver_address: p.receiver_address,
+				receiver_signature: p.receiver_signature,
+				sender_address: sender_address.to_ed25519()?,
+				sender_address_path,
+				sender_signature: None,
+			});
+		};
 
 		// write the output representing our change
 		for (id, _, _) in &context.get_outputs() {
@@ -283,7 +337,7 @@ where
 				n_child: id.to_path().last_path_index(),
 				commit: commit,
 				mmr_index: None,
-				value: change_amount.clone(),
+				value: change_amount,
 				status: OutputStatus::Unconfirmed,
 				height: height,
 				lock_height: 0,
@@ -295,7 +349,7 @@ where
 		batch.commit()?;
 	}
 
-	wallet.store_tx(&format!("{}", slate.id), &slate.tx)?;
+	wallet.store_tx(&format!("{}", slate.id), slate.tx_or_err()?)?;
 	Ok(())
 }
 
@@ -321,7 +375,7 @@ where
 	let amount = slate.amount;
 	let height = slate.height;
 
-	let slate_id = slate.id.clone();
+	let slate_id = slate.id;
 	let elem = if slate.token_type.clone().is_some() {
 		vec![build::token_output(
 			amount,
@@ -369,10 +423,10 @@ where
 		t.token_amount_credited = amount;
 		t.num_token_outputs = 1;
 		t.messages = messages;
+		t.ttl_cutoff_height = slate.ttl_cutoff_height;
 		// when invoicing, this will be invalid
-		match slate.calc_excess(&keychain) {
-			Ok(e) => t.kernel_excess = Some(e),
-			Err(_) => {}
+		if let Ok(e) = slate.calc_excess(&keychain) {
+			t.kernel_excess = Some(e)
 		}
 		t.kernel_lookup_min_height = Some(slate.height);
 		batch.save_token(TokenOutputData {
@@ -397,10 +451,10 @@ where
 		t.amount_credited = amount;
 		t.num_outputs = 1;
 		t.messages = messages;
+		t.ttl_cutoff_height = slate.ttl_cutoff_height;
 		// when invoicing, this will be invalid
-		match slate.calc_excess(&keychain) {
-			Ok(e) => t.kernel_excess = Some(e),
-			Err(_) => {}
+		if let Ok(e) = slate.calc_excess(&keychain) {
+			t.kernel_excess = Some(e)
 		}
 		t.kernel_lookup_min_height = Some(slate.height);
 		batch.save(OutputData {
@@ -543,7 +597,8 @@ where
 			available_disp: amount_to_hr_string(0, false),
 			needed: amount_with_fee as u64,
 			needed_disp: amount_to_hr_string(amount_with_fee as u64, false),
-		})?;
+		}
+		.into());
 	}
 
 	// The amount with fee is more than the total values of our max outputs
@@ -553,7 +608,8 @@ where
 			available_disp: amount_to_hr_string(total, false),
 			needed: amount_with_fee as u64,
 			needed_disp: amount_to_hr_string(amount_with_fee as u64, false),
-		})?;
+		}
+		.into());
 	}
 
 	let num_outputs = change_outputs + output_len;
@@ -581,7 +637,8 @@ where
 					available_disp: amount_to_hr_string(total, false),
 					needed: amount_with_fee as u64,
 					needed_disp: amount_to_hr_string(amount_with_fee as u64, false),
-				})?;
+				}
+				.into());
 			}
 
 			// select some spendable coins from the wallet
@@ -613,7 +670,7 @@ where
 
 /// Selects inputs and change for a transaction
 pub fn inputs_and_change<'a, T: ?Sized, C, K, B>(
-	coins: &Vec<OutputData>,
+	coins: &[OutputData],
 	wallet: &mut T,
 	keychain_mask: Option<&SecretKey>,
 	amount: u64,
@@ -728,7 +785,7 @@ where
 	// wants to send. So the wallet considers max_outputs more of a soft limit.
 	if eligible.len() > max_outputs {
 		for window in eligible.windows(max_outputs) {
-			let windowed_eligibles = window.iter().cloned().collect::<Vec<_>>();
+			let windowed_eligibles = window.to_vec();
 			if let Some(outputs) = select_from(amount, select_all, windowed_eligibles) {
 				return (max_available, outputs);
 			}
@@ -743,10 +800,8 @@ where
 			);
 			return (max_available, outputs);
 		}
-	} else {
-		if let Some(outputs) = select_from(amount, select_all, eligible.clone()) {
-			return (max_available, outputs);
-		}
+	} else if let Some(outputs) = select_from(amount, select_all, eligible.clone()) {
+		return (max_available, outputs);
 	}
 
 	// we failed to find a suitable set of outputs to spend,
@@ -763,10 +818,10 @@ fn select_from(amount: u64, select_all: bool, outputs: Vec<OutputData>) -> Optio
 	let total = outputs.iter().fold(0, |acc, x| acc + x.value);
 	if total >= amount {
 		if select_all {
-			return Some(outputs.iter().cloned().collect());
+			Some(outputs.to_vec())
 		} else {
 			let mut selected_amount = 0;
-			return Some(
+			Some(
 				outputs
 					.iter()
 					.take_while(|out| {
@@ -776,7 +831,7 @@ fn select_from(amount: u64, select_all: bool, outputs: Vec<OutputData>) -> Optio
 					})
 					.cloned()
 					.collect(),
-			);
+			)
 		}
 	} else {
 		None

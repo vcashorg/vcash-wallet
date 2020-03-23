@@ -4,7 +4,11 @@ steps:
     displayName: Windows Install LLVM
     condition: eq( variables['Agent.OS'], 'Windows_NT' )
   - script: |
-      curl https://sh.rustup.rs -sSf | sh -s -- -y
-      echo "##vso[task.setvariable variable=PATH;]$PATH:$HOME/.cargo/bin"
-    displayName: macOS Install Rust
+      sudo apt-get update -yqq
+      sudo apt-get install -yqq --no-install-recommends libclang-dev clang
+    displayName: Linux Install Dependencies
+    condition: eq( variables['Agent.OS'], 'Linux' )
+  - script: |
+      brew uninstall llvm
+    displayName: macOS Uninstall LLVM
     condition: eq( variables['Agent.OS'], 'Darwin' )

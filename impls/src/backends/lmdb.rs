@@ -32,9 +32,9 @@ use crate::core::core::Transaction;
 use crate::core::ser;
 use crate::libwallet::{
 	AcctPathMapping, Context, Error, ErrorKind, NodeClient, OutputData, ScannedBlockInfo,
-	TokenOutputData, TokenTxLogEntry, TxLogEntry, WalletBackend, WalletInitStatus,
-	WalletOutputBatch,
+	TxLogEntry, WalletBackend, WalletInitStatus, WalletOutputBatch,
 };
+use crate::libwallet::{TokenOutputData, TokenTxLogEntry};
 use crate::util::secp::constants::SECRET_KEY_SIZE;
 use crate::util::secp::key::SecretKey;
 use crate::util::{self, secp};
@@ -42,22 +42,22 @@ use crate::util::{self, secp};
 use rand::rngs::mock::StepRng;
 use rand::thread_rng;
 
-pub const DB_DIR: &'static str = "db";
-pub const TX_SAVE_DIR: &'static str = "saved_txs";
+pub const DB_DIR: &str = "db";
+pub const TX_SAVE_DIR: &str = "saved_txs";
 
-const OUTPUT_PREFIX: u8 = 'o' as u8;
-const DERIV_PREFIX: u8 = 'd' as u8;
-const CONFIRMED_HEIGHT_PREFIX: u8 = 'c' as u8;
-const PRIVATE_TX_CONTEXT_PREFIX: u8 = 'p' as u8;
-const TX_LOG_ENTRY_PREFIX: u8 = 't' as u8;
-const TX_LOG_ID_PREFIX: u8 = 'i' as u8;
-const ACCOUNT_PATH_MAPPING_PREFIX: u8 = 'a' as u8;
-const LAST_SCANNED_BLOCK: u8 = 'l' as u8;
+const OUTPUT_PREFIX: u8 = b'o';
+const DERIV_PREFIX: u8 = b'd';
+const CONFIRMED_HEIGHT_PREFIX: u8 = b'c';
+const PRIVATE_TX_CONTEXT_PREFIX: u8 = b'p';
+const TX_LOG_ENTRY_PREFIX: u8 = b't';
+const TX_LOG_ID_PREFIX: u8 = b'i';
+const ACCOUNT_PATH_MAPPING_PREFIX: u8 = b'a';
+const LAST_SCANNED_BLOCK: u8 = b'l';
 const LAST_SCANNED_KEY: &str = "LAST_SCANNED_KEY";
-const WALLET_INIT_STATUS: u8 = 'w' as u8;
+const WALLET_INIT_STATUS: u8 = b'w';
 const WALLET_INIT_STATUS_KEY: &str = "WALLET_INIT_STATUS";
-const TOKEN_OUTPUT_PREFIX: u8 = 'T' as u8;
-const TOKEN_TX_LOG_ENTRY_PREFIX: u8 = 'L' as u8;
+const TOKEN_OUTPUT_PREFIX: u8 = b'T';
+const TOKEN_TX_LOG_ENTRY_PREFIX: u8 = b'L';
 
 /// test to see if database files exist in the current directory. If so,
 /// use a DB backend for all operations
@@ -75,14 +75,14 @@ fn private_ctx_xor_keys<K>(
 where
 	K: Keychain,
 {
-	let root_key = keychain.derive_key(0, &K::root_key_id(), &SwitchCommitmentType::Regular)?;
+	let root_key = keychain.derive_key(0, &K::root_key_id(), SwitchCommitmentType::Regular)?;
 
 	// derive XOR values for storing secret values in DB
 	// h(root_key|slate_id|"blind")
 	let mut hasher = Blake2b::new(SECRET_KEY_SIZE);
 	hasher.update(&root_key.0[..]);
 	hasher.update(&slate_id[..]);
-	hasher.update(&"blind".as_bytes()[..]);
+	hasher.update(&b"blind"[..]);
 	let blind_xor_key = hasher.finalize();
 	let mut ret_blind = [0; SECRET_KEY_SIZE];
 	ret_blind.copy_from_slice(&blind_xor_key.as_bytes()[0..SECRET_KEY_SIZE]);
@@ -91,7 +91,7 @@ where
 	let mut hasher = Blake2b::new(SECRET_KEY_SIZE);
 	hasher.update(&root_key.0[..]);
 	hasher.update(&slate_id[..]);
-	hasher.update(&"nonce".as_bytes()[..]);
+	hasher.update(&b"nonce"[..]);
 	let nonce_xor_key = hasher.finalize();
 	let mut ret_nonce = [0; SECRET_KEY_SIZE];
 	ret_nonce.copy_from_slice(&nonce_xor_key.as_bytes()[0..SECRET_KEY_SIZE]);
@@ -191,7 +191,7 @@ where
 		use_test_rng: bool,
 	) -> Result<Option<SecretKey>, Error> {
 		// store hash of master key, so it can be verified later after unmasking
-		let root_key = k.derive_key(0, &K::root_key_id(), &SwitchCommitmentType::Regular)?;
+		let root_key = k.derive_key(0, &K::root_key_id(), SwitchCommitmentType::Regular)?;
 		let mut hasher = Blake2b::new(SECRET_KEY_SIZE);
 		hasher.update(&root_key.0[..]);
 		self.master_checksum = Box::new(Some(hasher.finalize()));
@@ -203,7 +203,7 @@ where
 					// before it is used
 					let mask_value = match use_test_rng {
 						true => {
-							let mut test_rng = StepRng::new(1234567890u64, 1);
+							let mut test_rng = StepRng::new(1_234_567_890_u64, 1);
 							secp::key::SecretKey::new(&k.secp(), &mut test_rng)
 						}
 						false => secp::key::SecretKey::new(&k.secp(), &mut thread_rng()),
@@ -236,7 +236,7 @@ where
 				}
 				// Check if master seed is what is expected (especially if it's been xored)
 				let root_key =
-					k_masked.derive_key(0, &K::root_key_id(), &SwitchCommitmentType::Regular)?;
+					k_masked.derive_key(0, &K::root_key_id(), SwitchCommitmentType::Regular)?;
 				let mut hasher = Blake2b::new(SECRET_KEY_SIZE);
 				hasher.update(&root_key.0[..]);
 				if *self.master_checksum != Some(hasher.finalize()) {
@@ -268,7 +268,7 @@ where
 		} else {*/
 		Ok(Some(util::to_hex(
 			self.keychain(keychain_mask)?
-				.commit(amount, &id, &SwitchCommitmentType::Regular)?
+				.commit(amount, &id, SwitchCommitmentType::Regular)?
 				.0
 				.to_vec(), // TODO: proper support for different switch commitment schemes
 		)))
@@ -283,7 +283,7 @@ where
 			self.set_parent_key_id(a.path);
 			Ok(())
 		} else {
-			return Err(ErrorKind::UnknownAccountLabel(label.clone()).into());
+			Err(ErrorKind::UnknownAccountLabel(label).into())
 		}
 	}
 
@@ -368,8 +368,8 @@ where
 		})?;
 
 		for i in 0..SECRET_KEY_SIZE {
-			ctx.sec_key.0[i] = ctx.sec_key.0[i] ^ blind_xor_key[i];
-			ctx.sec_nonce.0[i] = ctx.sec_nonce.0[i] ^ nonce_xor_key[i];
+			ctx.sec_key.0[i] ^= blind_xor_key[i];
+			ctx.sec_nonce.0[i] ^= nonce_xor_key[i];
 		}
 
 		Ok(ctx)
@@ -414,7 +414,7 @@ where
 		let mut tx_f = File::open(tx_file)?;
 		let mut content = String::new();
 		tx_f.read_to_string(&mut content)?;
-		let tx_bin = util::from_hex(content).unwrap();
+		let tx_bin = util::from_hex(&content).unwrap();
 		let tx_ret = ser::deserialize::<Transaction>(&mut &tx_bin[..], ser::ProtocolVersion(1));
 		if tx_ret.is_ok() {
 			return Ok(Some(tx_ret.unwrap()));
@@ -436,7 +436,7 @@ where
 		let mut tx_f = File::open(tx_file)?;
 		let mut content = String::new();
 		tx_f.read_to_string(&mut content)?;
-		let tx_bin = util::from_hex(content).unwrap();
+		let tx_bin = util::from_hex(&content).unwrap();
 		let tx_ret = ser::deserialize::<Transaction>(&mut &tx_bin[..], ser::ProtocolVersion(1));
 		if tx_ret.is_ok() {
 			return Ok(Some(tx_ret.unwrap()));
@@ -488,9 +488,9 @@ where
 			}
 		};
 		let mut return_path = self.parent_key_id.to_path();
-		return_path.depth = return_path.depth + 1;
+		return_path.depth += 1;
 		return_path.path[return_path.depth as usize - 1] = ChildNumber::from(deriv_idx);
-		deriv_idx = deriv_idx + 1;
+		deriv_idx += 1;
 		let mut batch = self.batch(keychain_mask)?;
 		batch.save_child_index(&parent_key_id, deriv_idx)?;
 		batch.commit()?;
@@ -844,8 +844,8 @@ where
 
 		let mut s_ctx = ctx.clone();
 		for i in 0..SECRET_KEY_SIZE {
-			s_ctx.sec_key.0[i] = s_ctx.sec_key.0[i] ^ blind_xor_key[i];
-			s_ctx.sec_nonce.0[i] = s_ctx.sec_nonce.0[i] ^ nonce_xor_key[i];
+			s_ctx.sec_key.0[i] ^= blind_xor_key[i];
+			s_ctx.sec_nonce.0[i] ^= nonce_xor_key[i];
 		}
 
 		self.db

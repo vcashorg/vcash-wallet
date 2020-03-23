@@ -22,6 +22,7 @@ use grin_wallet_util::grin_core as core;
 use grin_wallet_libwallet as libwallet;
 use impls::test_framework::{self, LocalWalletClient};
 use libwallet::InitTxArgs;
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
@@ -34,6 +35,7 @@ fn self_send_test_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 	// Create a new proxy to simulate server and wallet responses
 	let mut wallet_proxy = create_wallet_proxy(test_dir);
 	let chain = wallet_proxy.chain.clone();
+	let stopper = wallet_proxy.running.clone();
 
 	// Create a new wallet test client, and set its queues to communicate with the
 	// proxy
@@ -60,7 +62,7 @@ fn self_send_test_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 	let reward = core::consensus::REWARD;
 
 	// add some accounts
-	wallet::controller::owner_single_use(wallet1.clone(), mask1, |api, m| {
+	wallet::controller::owner_single_use(Some(wallet1.clone()), mask1, None, |api, m| {
 		api.create_account_path(m, "mining")?;
 		api.create_account_path(m, "listener")?;
 		Ok(())
@@ -76,7 +78,7 @@ fn self_send_test_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 		test_framework::award_blocks_to_wallet(&chain, wallet1.clone(), mask1, bh as usize, false);
 
 	// Should have 5 in account1 (5 spendable), 5 in account (2 spendable)
-	wallet::controller::owner_single_use(wallet1.clone(), mask1, |api, m| {
+	wallet::controller::owner_single_use(Some(wallet1.clone()), mask1, None, |api, m| {
 		let (wallet1_refreshed, wallet1_info) = api.retrieve_summary_info(m, true, 1)?;
 		assert!(wallet1_refreshed);
 		assert_eq!(wallet1_info.last_confirmed_height, bh);
@@ -99,7 +101,7 @@ fn self_send_test_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 			Ok(())
 		})?;
 		slate = api.finalize_tx(m, &slate)?;
-		api.post_tx(m, &slate.tx, false)?; // mines a block
+		api.post_tx(m, slate.tx_or_err()?, false)?; // mines a block
 		bh += 1;
 		Ok(())
 	})?;
@@ -108,7 +110,7 @@ fn self_send_test_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 	bh += 3;
 
 	// Check total in mining account
-	wallet::controller::owner_single_use(wallet1.clone(), mask1, |api, m| {
+	wallet::controller::owner_single_use(Some(wallet1.clone()), mask1, None, |api, m| {
 		let (wallet1_refreshed, wallet1_info) = api.retrieve_summary_info(m, true, 1)?;
 		assert!(wallet1_refreshed);
 		assert_eq!(wallet1_info.last_confirmed_height, bh);
@@ -121,7 +123,7 @@ fn self_send_test_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 		wallet_inst!(wallet1, w);
 		w.set_parent_key_id_by_name("listener")?;
 	}
-	wallet::controller::owner_single_use(wallet1.clone(), mask1, |api, m| {
+	wallet::controller::owner_single_use(Some(wallet1.clone()), mask1, None, |api, m| {
 		let (wallet1_refreshed, wallet1_info) = api.retrieve_summary_info(m, true, 1)?;
 		assert!(wallet1_refreshed);
 		assert_eq!(wallet1_info.last_confirmed_height, bh);
@@ -130,6 +132,7 @@ fn self_send_test_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 	})?;
 
 	// let logging finish
+	stopper.store(false, Ordering::Relaxed);
 	thread::sleep(Duration::from_millis(200));
 	Ok(())
 }

@@ -15,10 +15,11 @@
 use crate::core::core::{self, amount_to_hr_string};
 use crate::core::global;
 use crate::libwallet::{
-	AcctPathMapping, Error, OutputCommitMapping, OutputStatus, TokenOutputCommitMapping,
-	TokenTxLogEntry, TxLogEntry, WalletInfo,
+	AcctPathMapping, Error, OutputCommitMapping, OutputStatus, TxLogEntry, WalletInfo,
 };
+use crate::libwallet::{TokenOutputCommitMapping, TokenTxLogEntry};
 use crate::util;
+use grin_wallet_util::OnionV3Address;
 use prettytable;
 use std::io::prelude::Write;
 use term;
@@ -254,6 +255,7 @@ pub fn txs(
 		bMG->"Type",
 		bMG->"Shared Transaction Id",
 		bMG->"Creation Time",
+		bMG->"TTL Cutoff Height",
 		bMG->"Confirmed?",
 		bMG->"Confirmation Time",
 		bMG->"Num. \nInputs",
@@ -262,6 +264,7 @@ pub fn txs(
 		bMG->"Amount \nDebited",
 		bMG->"Fee",
 		bMG->"Net \nDifference",
+		bMG->"Payment \nProof",
 		bMG->"Kernel",
 		bMG->"Tx \nData",
 	]);
@@ -274,6 +277,10 @@ pub fn txs(
 		};
 		let entry_type = format!("{}", t.tx_type);
 		let creation_ts = format!("{}", t.creation_ts.format("%Y-%m-%d %H:%M:%S"));
+		let ttl_cutoff_height = match t.ttl_cutoff_height {
+			Some(b) => format!("{}", b),
+			None => "None".to_owned(),
+		};
 		let confirmation_ts = match t.confirmation_ts {
 			Some(m) => format!("{}", m.format("%Y-%m-%d %H:%M:%S")),
 			None => "None".to_owned(),
@@ -303,12 +310,17 @@ pub fn txs(
 			Some(e) => util::to_hex(e.0.to_vec()),
 			None => "None".to_owned(),
 		};
+		let payment_proof = match t.payment_proof {
+			Some(_) => "Yes".to_owned(),
+			None => "None".to_owned(),
+		};
 		if dark_background_color_scheme {
 			table.add_row(row![
 				bFC->id,
 				bFC->entry_type,
 				bFC->slate_id,
 				bFB->creation_ts,
+				bFB->ttl_cutoff_height,
 				bFC->confirmed,
 				bFB->confirmation_ts,
 				bFC->num_inputs,
@@ -317,6 +329,7 @@ pub fn txs(
 				bFR->amount_debited_str,
 				bFR->fee,
 				bFY->net_diff,
+				bfG->payment_proof,
 				bFB->kernel_excess,
 				bFb->tx_data,
 			]);
@@ -335,6 +348,7 @@ pub fn txs(
 					bFD->amount_debited_str,
 					bFD->fee,
 					bFG->net_diff,
+					bfG->payment_proof,
 					bFB->kernel_excess,
 					bFB->tx_data,
 				]);
@@ -352,6 +366,7 @@ pub fn txs(
 					bFD->amount_debited_str,
 					bFD->fee,
 					bFG->net_diff,
+					bfG->payment_proof,
 					bFB->kernel_excess,
 					bFB->tx_data,
 				]);
@@ -403,6 +418,7 @@ pub fn token_txs(
 		bMG->"Type",
 		bMG->"Shared Transaction Id",
 		bMG->"Creation Time",
+		bMG->"TTL Cutoff Height",
 		bMG->"Confirmed?",
 		bMG->"Confirmation Time",
 		bMG->"Token Type",
@@ -416,6 +432,7 @@ pub fn token_txs(
 		bMG->"Amount \nDebited",
 		bMG->"Fee",
 		bMG->"Net \nDifference",
+		bMG->"Payment \nProof",
 		bMG->"Kernel",
 		bMG->"Tx \nData",
 	]);
@@ -428,6 +445,10 @@ pub fn token_txs(
 		};
 		let entry_type = format!("{}", t.tx_type);
 		let creation_ts = format!("{}", t.creation_ts.format("%Y-%m-%d %H:%M:%S"));
+		let ttl_cutoff_height = match t.ttl_cutoff_height {
+			Some(b) => format!("{}", b),
+			None => "None".to_owned(),
+		};
 		let confirmation_ts = match t.confirmation_ts {
 			Some(m) => format!("{}", m.format("%Y-%m-%d %H:%M:%S")),
 			None => "None".to_owned(),
@@ -462,12 +483,17 @@ pub fn token_txs(
 			Some(e) => util::to_hex(e.0.to_vec()),
 			None => "None".to_owned(),
 		};
+		let payment_proof = match t.payment_proof {
+			Some(_) => "Yes".to_owned(),
+			None => "None".to_owned(),
+		};
 		if dark_background_color_scheme {
 			table.add_row(row![
 				bFC->id,
 				bFC->entry_type,
 				bFC->slate_id,
 				bFB->creation_ts,
+				bFB->ttl_cutoff_height,
 				bFC->confirmed,
 				bFB->confirmation_ts,
 				bFR->token_type,
@@ -481,6 +507,7 @@ pub fn token_txs(
 				bFR->amount_debited_str,
 				bFR->fee,
 				bFY->net_diff,
+				bfG->payment_proof,
 				bFB->kernel_excess,
 				bFb->tx_data,
 			]);
@@ -504,6 +531,7 @@ pub fn token_txs(
 					bFD->amount_debited_str,
 					bFD->fee,
 					bFG->net_diff,
+					bfG->payment_proof,
 					bFB->kernel_excess,
 					bFB->tx_data,
 				]);
@@ -526,6 +554,7 @@ pub fn token_txs(
 					bFD->amount_debited_str,
 					bFD->fee,
 					bFG->net_diff,
+					bfG->payment_proof,
 					bFB->kernel_excess,
 					bFB->tx_data,
 				]);
@@ -546,7 +575,6 @@ pub fn token_txs(
 	}
 	Ok(())
 }
-
 /// Display summary info in a pretty way
 pub fn info(
 	account: &str,
@@ -566,6 +594,12 @@ pub fn info(
 			bFG->"Total",
 			FG->amount_to_hr_string(wallet_info.total, false)
 		]);
+		if wallet_info.amount_reverted > 0 {
+			table.add_row(row![
+				Fr->format!("Reverted"),
+				Fr->amount_to_hr_string(wallet_info.amount_reverted, false)
+			]);
+		}
 		// Only dispay "Immature Coinbase" if we have related outputs in the wallet.
 		// This row just introduces confusion if the wallet does not receive coinbase rewards.
 		if wallet_info.amount_immature > 0 {
@@ -599,6 +633,12 @@ pub fn info(
 			bFG->"Total",
 			FG->amount_to_hr_string(wallet_info.total, false)
 		]);
+		if wallet_info.amount_reverted > 0 {
+			table.add_row(row![
+				Fr->format!("Reverted"),
+				Fr->amount_to_hr_string(wallet_info.amount_reverted, false)
+			]);
+		}
 		// Only dispay "Immature Coinbase" if we have related outputs in the wallet.
 		// This row just introduces confusion if the wallet does not receive coinbase rewards.
 		if wallet_info.amount_immature > 0 {
@@ -642,6 +682,10 @@ pub fn info(
 		table.add_row(row![
 			bFG->"Total",
 			FG->amount_to_hr_string(token_info.amount_awaiting_confirmation+token_info.amount_awaiting_finalization+token_info.amount_currently_spendable, false)
+		]);
+		table.add_row(row![
+			bFG->"Reverted",
+			FG->amount_to_hr_string(token_info.amount_reverted, false)
 		]);
 		table.add_row(row![
 			bFY->format!("Awaiting Confirmation (< {})", wallet_info.minimum_confirmations),
@@ -753,7 +797,7 @@ pub fn tx_messages(tx: &TxLogEntry, dark_background_color_scheme: bool) -> Resul
 
 	let msgs = match tx.messages.clone() {
 		None => {
-			writeln!(t, "{}", "None").unwrap();
+			writeln!(t, "None").unwrap();
 			t.reset().unwrap();
 			return Ok(());
 		}
@@ -761,7 +805,7 @@ pub fn tx_messages(tx: &TxLogEntry, dark_background_color_scheme: bool) -> Resul
 	};
 
 	if msgs.messages.is_empty() {
-		writeln!(t, "{}", "None").unwrap();
+		writeln!(t, "None").unwrap();
 		t.reset().unwrap();
 		return Ok(());
 	}
@@ -892,6 +936,154 @@ pub fn token_tx_messages(
 
 	table.set_format(*prettytable::format::consts::FORMAT_NO_COLSEP);
 	table.printstd();
+	println!();
+
+	Ok(())
+}
+
+/// Display individual Payment Proof
+pub fn payment_proof(tx: &TxLogEntry) -> Result<(), Error> {
+	let title = format!("Payment Proof - Transaction '{}'", tx.id,);
+	println!();
+	if term::stdout().is_none() {
+		println!("Could not open terminal");
+		return Ok(());
+	}
+	let mut t = term::stdout().unwrap();
+	t.fg(term::color::MAGENTA).unwrap();
+	writeln!(t, "{}", title).unwrap();
+	t.reset().unwrap();
+
+	let pp = match &tx.payment_proof {
+		None => {
+			writeln!(t, "None").unwrap();
+			t.reset().unwrap();
+			return Ok(());
+		}
+		Some(p) => p.clone(),
+	};
+
+	t.fg(term::color::WHITE).unwrap();
+	writeln!(t).unwrap();
+	let receiver_signature = match pp.receiver_signature {
+		Some(s) => util::to_hex(s.to_bytes().to_vec()),
+		None => "None".to_owned(),
+	};
+	let fee = match tx.fee {
+		Some(f) => f,
+		None => 0,
+	};
+	let amount = if tx.amount_credited >= tx.amount_debited {
+		core::amount_to_hr_string(tx.amount_credited - tx.amount_debited, true)
+	} else {
+		format!(
+			"{}",
+			core::amount_to_hr_string(tx.amount_debited - tx.amount_credited - fee, true)
+		)
+	};
+
+	let sender_signature = match pp.sender_signature {
+		Some(s) => util::to_hex(s.to_bytes().to_vec()),
+		None => "None".to_owned(),
+	};
+	let kernel_excess = match tx.kernel_excess {
+		Some(e) => util::to_hex(e.0.to_vec()),
+		None => "None".to_owned(),
+	};
+
+	writeln!(
+		t,
+		"Receiver Address: {}",
+		OnionV3Address::from_bytes(pp.receiver_address.to_bytes())
+	)
+	.unwrap();
+	writeln!(t, "Receiver Signature: {}", receiver_signature).unwrap();
+	writeln!(t, "Amount: {}", amount).unwrap();
+	writeln!(t, "Kernel Excess: {}", kernel_excess).unwrap();
+	writeln!(
+		t,
+		"Sender Address: {}",
+		OnionV3Address::from_bytes(pp.sender_address.to_bytes())
+	)
+	.unwrap();
+	writeln!(t, "Sender Signature: {}", sender_signature).unwrap();
+
+	t.reset().unwrap();
+
+	println!();
+
+	Ok(())
+}
+
+/// Display individual Payment Proof
+pub fn token_payment_proof(tx: &TokenTxLogEntry) -> Result<(), Error> {
+	let title = format!("Payment Proof - Transaction '{}'", tx.id,);
+	println!();
+	if term::stdout().is_none() {
+		println!("Could not open terminal");
+		return Ok(());
+	}
+	let mut t = term::stdout().unwrap();
+	t.fg(term::color::MAGENTA).unwrap();
+	writeln!(t, "{}", title).unwrap();
+	t.reset().unwrap();
+
+	let pp = match &tx.payment_proof {
+		None => {
+			writeln!(t, "None").unwrap();
+			t.reset().unwrap();
+			return Ok(());
+		}
+		Some(p) => p.clone(),
+	};
+
+	t.fg(term::color::WHITE).unwrap();
+	writeln!(t).unwrap();
+	let receiver_signature = match pp.receiver_signature {
+		Some(s) => util::to_hex(s.to_bytes().to_vec()),
+		None => "None".to_owned(),
+	};
+	let fee = match tx.fee {
+		Some(f) => f,
+		None => 0,
+	};
+	let amount = if tx.amount_credited >= tx.amount_debited {
+		core::amount_to_hr_string(tx.amount_credited - tx.amount_debited, true)
+	} else {
+		format!(
+			"{}",
+			core::amount_to_hr_string(tx.amount_debited - tx.amount_credited - fee, true)
+		)
+	};
+
+	let sender_signature = match pp.sender_signature {
+		Some(s) => util::to_hex(s.to_bytes().to_vec()),
+		None => "None".to_owned(),
+	};
+	let kernel_excess = match tx.kernel_excess {
+		Some(e) => util::to_hex(e.0.to_vec()),
+		None => "None".to_owned(),
+	};
+
+	writeln!(
+		t,
+		"Receiver Address: {}",
+		OnionV3Address::from_bytes(pp.receiver_address.to_bytes())
+	)
+	.unwrap();
+	writeln!(t, "Receiver Signature: {}", receiver_signature).unwrap();
+	writeln!(t, "Amount: {}", amount).unwrap();
+	writeln!(t, "Kernel Excess: {}", kernel_excess).unwrap();
+	writeln!(
+		t,
+		"Sender Address: {}",
+		OnionV3Address::from_bytes(pp.sender_address.to_bytes())
+	)
+	.unwrap();
+	writeln!(t, "Sender Signature: {}", sender_signature).unwrap();
+
+	t.reset().unwrap();
+
 	println!();
 
 	Ok(())

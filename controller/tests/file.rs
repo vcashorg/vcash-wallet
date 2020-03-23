@@ -22,6 +22,7 @@ use grin_wallet_util::grin_core as core;
 
 use impls::test_framework::{self, LocalWalletClient};
 use impls::{PathToSlate, SlateGetter as _, SlatePutter as _};
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
@@ -38,6 +39,7 @@ fn file_exchange_test_impl(test_dir: &'static str) -> Result<(), libwallet::Erro
 	// Create a new proxy to simulate server and wallet responses
 	let mut wallet_proxy = create_wallet_proxy(test_dir);
 	let chain = wallet_proxy.chain.clone();
+	let stopper = wallet_proxy.running.clone();
 
 	// Create a new wallet test client, and set its queues to communicate with the
 	// proxy
@@ -75,14 +77,14 @@ fn file_exchange_test_impl(test_dir: &'static str) -> Result<(), libwallet::Erro
 	let reward = core::consensus::REWARD;
 
 	// add some accounts
-	wallet::controller::owner_single_use(wallet1.clone(), mask1, |api, m| {
+	wallet::controller::owner_single_use(Some(wallet1.clone()), mask1, None, |api, m| {
 		api.create_account_path(m, "mining")?;
 		api.create_account_path(m, "listener")?;
 		Ok(())
 	})?;
 
 	// add some accounts
-	wallet::controller::owner_single_use(wallet2.clone(), mask2, |api, m| {
+	wallet::controller::owner_single_use(Some(wallet2.clone()), mask2, None, |api, m| {
 		api.create_account_path(m, "account1")?;
 		api.create_account_path(m, "account2")?;
 		Ok(())
@@ -104,7 +106,7 @@ fn file_exchange_test_impl(test_dir: &'static str) -> Result<(), libwallet::Erro
 	let message = "sender test message, sender test message";
 
 	// Should have 5 in account1 (5 spendable), 5 in account (2 spendable)
-	wallet::controller::owner_single_use(wallet1.clone(), mask1, |api, m| {
+	wallet::controller::owner_single_use(Some(wallet1.clone()), mask1, None, |api, m| {
 		let (wallet1_refreshed, wallet1_info) = api.retrieve_summary_info(m, true, 1)?;
 		assert!(wallet1_refreshed);
 		assert_eq!(wallet1_info.last_confirmed_height, bh);
@@ -120,9 +122,9 @@ fn file_exchange_test_impl(test_dir: &'static str) -> Result<(), libwallet::Erro
 			message: Some(message.to_owned()),
 			..Default::default()
 		};
-		let mut slate = api.init_send_tx(m, args)?;
+		let slate = api.init_send_tx(m, args)?;
 		// output tx file
-		PathToSlate((&send_file).into()).put_tx(&mut slate)?;
+		PathToSlate((&send_file).into()).put_tx(&slate)?;
 		api.tx_lock_outputs(m, &slate, 0)?;
 		Ok(())
 	})?;
@@ -138,7 +140,7 @@ fn file_exchange_test_impl(test_dir: &'static str) -> Result<(), libwallet::Erro
 	naughty_slate.participant_data[0].message = Some("I changed the message".to_owned());
 
 	// verify messages on slate match
-	wallet::controller::owner_single_use(wallet1.clone(), mask1, |api, m| {
+	wallet::controller::owner_single_use(Some(wallet1.clone()), mask1, None, |api, m| {
 		api.verify_slate_messages(m, &slate)?;
 		assert!(api.verify_slate_messages(m, &naughty_slate).is_err());
 		Ok(())
@@ -154,11 +156,11 @@ fn file_exchange_test_impl(test_dir: &'static str) -> Result<(), libwallet::Erro
 	})?;
 
 	// wallet 1 finalises and posts
-	wallet::controller::owner_single_use(wallet1.clone(), mask1, |api, m| {
+	wallet::controller::owner_single_use(Some(wallet1.clone()), mask1, None, |api, m| {
 		let mut slate = PathToSlate(receive_file.into()).get_tx()?;
 		api.verify_slate_messages(m, &slate)?;
 		slate = api.finalize_tx(m, &slate)?;
-		api.post_tx(m, &slate.tx, false)?;
+		api.post_tx(m, slate.tx_or_err()?, false)?;
 		bh += 1;
 		Ok(())
 	})?;
@@ -167,7 +169,7 @@ fn file_exchange_test_impl(test_dir: &'static str) -> Result<(), libwallet::Erro
 	bh += 3;
 
 	// Check total in mining account
-	wallet::controller::owner_single_use(wallet1.clone(), mask1, |api, m| {
+	wallet::controller::owner_single_use(Some(wallet1.clone()), mask1, None, |api, m| {
 		let (wallet1_refreshed, wallet1_info) = api.retrieve_summary_info(m, true, 1)?;
 		assert!(wallet1_refreshed);
 		assert_eq!(wallet1_info.last_confirmed_height, bh);
@@ -176,7 +178,7 @@ fn file_exchange_test_impl(test_dir: &'static str) -> Result<(), libwallet::Erro
 	})?;
 
 	// Check total in 'wallet 2' account
-	wallet::controller::owner_single_use(wallet2.clone(), mask2, |api, m| {
+	wallet::controller::owner_single_use(Some(wallet2.clone()), mask2, None, |api, m| {
 		let (wallet2_refreshed, wallet2_info) = api.retrieve_summary_info(m, true, 1)?;
 		assert!(wallet2_refreshed);
 		assert_eq!(wallet2_info.last_confirmed_height, bh);
@@ -185,7 +187,7 @@ fn file_exchange_test_impl(test_dir: &'static str) -> Result<(), libwallet::Erro
 	})?;
 
 	// Check messages, all participants should have both
-	wallet::controller::owner_single_use(wallet1.clone(), mask1, |api, m| {
+	wallet::controller::owner_single_use(Some(wallet1.clone()), mask1, None, |api, m| {
 		let (_, tx) = api.retrieve_txs(m, true, None, Some(slate.id))?;
 		assert_eq!(
 			tx[0].clone().messages.unwrap().messages[0].message,
@@ -201,7 +203,7 @@ fn file_exchange_test_impl(test_dir: &'static str) -> Result<(), libwallet::Erro
 		Ok(())
 	})?;
 
-	wallet::controller::owner_single_use(wallet2.clone(), mask2, |api, m| {
+	wallet::controller::owner_single_use(Some(wallet2.clone()), mask2, None, |api, m| {
 		let (_, tx) = api.retrieve_txs(m, true, None, Some(slate.id))?;
 		assert_eq!(
 			tx[0].clone().messages.unwrap().messages[0].message,
@@ -215,6 +217,7 @@ fn file_exchange_test_impl(test_dir: &'static str) -> Result<(), libwallet::Erro
 	})?;
 
 	// let logging finish
+	stopper.store(false, Ordering::Relaxed);
 	thread::sleep(Duration::from_millis(200));
 	Ok(())
 }

@@ -28,6 +28,8 @@ use grin_wallet_util::grin_keychain;
 use grin_wallet_util::grin_store;
 use grin_wallet_util::grin_util;
 
+use grin_wallet_util as util;
+
 use blake2_rfc as blake2;
 
 use failure;
@@ -44,6 +46,7 @@ extern crate strum;
 #[macro_use]
 extern crate strum_macros;
 
+pub mod address;
 pub mod api_impl;
 mod error;
 mod internal;
@@ -59,17 +62,19 @@ pub use crate::slate_versions::{
 };
 pub use api_impl::owner_updater::StatusMessage;
 pub use api_impl::types::{
-	BlockFees, InitTxArgs, InitTxSendArgs, IssueInvoiceTxArgs, IssueTokenArgs, NodeHeightResult,
-	OutputCommitMapping, SendTXArgs, TokenOutputCommitMapping, VersionInfo,
+	BlockFees, InitTxArgs, InitTxSendArgs, IssueInvoiceTxArgs, NodeHeightResult,
+	OutputCommitMapping, PaymentProof, SendTXArgs, VersionInfo,
 };
+pub use api_impl::types::{IssueTokenArgs, TokenOutputCommitMapping};
 pub use internal::scan::scan;
 pub use internal::token_scan::token_scan;
+pub use slate_versions::ser as dalek_ser;
 pub use types::{
 	AcctPathMapping, BlockIdentifier, CbData, Context, NodeClient, NodeVersionInfo, OutputData,
-	OutputStatus, ScannedBlockInfo, TokenOutputData, TokenTxLogEntry, TokenTxLogEntryType,
-	TxLogEntry, TxLogEntryType, TxWrapper, WalletBackend, WalletInfo, WalletInitStatus, WalletInst,
-	WalletLCProvider, WalletOutputBatch,
+	OutputStatus, ScannedBlockInfo, StoredProofInfo, TxLogEntry, TxLogEntryType, TxWrapper,
+	WalletBackend, WalletInfo, WalletInitStatus, WalletInst, WalletLCProvider, WalletOutputBatch,
 };
+pub use types::{TokenOutputData, TokenTxLogEntry, TokenTxLogEntryType};
 
 /// Helper for taking a lock on the wallet instance
 #[macro_export]

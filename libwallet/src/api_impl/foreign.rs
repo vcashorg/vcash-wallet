@@ -15,13 +15,15 @@
 //! Generic implementation of owner API functions
 use strum::IntoEnumIterator;
 
+use crate::api_impl::owner::check_ttl;
 use crate::grin_keychain::Keychain;
 use crate::grin_util::secp::key::SecretKey;
 use crate::internal::{tx, updater};
 use crate::slate_versions::SlateVersion;
+use crate::TokenTxLogEntryType;
 use crate::{
-	BlockFees, CbData, Error, ErrorKind, NodeClient, Slate, TokenTxLogEntryType, TxLogEntryType,
-	VersionInfo, WalletBackend,
+	address, BlockFees, CbData, Error, ErrorKind, NodeClient, Slate, TxLogEntryType, VersionInfo,
+	WalletBackend,
 };
 
 const FOREIGN_API_VERSION: u16 = 2;
@@ -70,6 +72,7 @@ where
 	K: Keychain + 'a,
 {
 	let mut ret_slate = slate.clone();
+	check_ttl(w, &ret_slate)?;
 	let parent_key_id = match dest_acct_name {
 		Some(d) => {
 			let pm = w.get_acct_path(d.to_owned())?;
@@ -127,7 +130,22 @@ where
 		false,
 		use_test_rng,
 	)?;
-	tx::update_message(&mut *w, keychain_mask, &mut ret_slate)?;
+	tx::update_message(&mut *w, keychain_mask, &ret_slate)?;
+
+	let keychain = w.keychain(keychain_mask)?;
+	let excess = ret_slate.calc_excess(&keychain)?;
+
+	if let Some(ref mut p) = ret_slate.payment_proof {
+		let sig = tx::create_payment_proof_signature(
+			ret_slate.amount,
+			&excess,
+			p.sender_address,
+			address::address_from_derivation_path(&keychain, &parent_key_id, 0)?,
+		)?;
+
+		p.receiver_signature = Some(sig);
+	}
+
 	Ok(ret_slate)
 }
 
@@ -143,10 +161,11 @@ where
 	K: Keychain + 'a,
 {
 	let mut sl = slate.clone();
+	check_ttl(w, &sl)?;
 	let context = w.get_private_context(keychain_mask, sl.id.as_bytes(), 1)?;
 	tx::complete_tx(&mut *w, keychain_mask, &mut sl, 1, &context)?;
-	tx::update_stored_tx(&mut *w, keychain_mask, &mut sl, true)?;
-	tx::update_message(&mut *w, keychain_mask, &mut sl)?;
+	tx::update_stored_tx(&mut *w, keychain_mask, &context, &mut sl, true)?;
+	tx::update_message(&mut *w, keychain_mask, &sl)?;
 	{
 		let mut batch = w.batch(keychain_mask)?;
 		batch.delete_private_context(sl.id.as_bytes(), 1)?;

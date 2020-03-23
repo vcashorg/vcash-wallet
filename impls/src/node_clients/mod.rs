@@ -13,5 +13,6 @@
 // limitations under the License.
 
 mod http;
+mod resp_types;
 
 pub use self::http::HTTPNodeClient;

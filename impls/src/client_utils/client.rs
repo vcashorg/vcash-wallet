@@ -14,16 +14,12 @@
 
 //! High level JSON/HTTP client API
 
-use crate::client_utils::Socksv5Connector;
 use crate::util::to_base64;
+use crossbeam_utils::thread::scope;
 use failure::{Backtrace, Context, Fail, ResultExt};
-use futures::future::result;
-use futures::future::{err, ok, Either};
-use futures::stream::Stream;
-use http::uri::{InvalidUri, Uri};
+use hyper::body;
 use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
-use hyper::rt::Future;
-use hyper::{self, Body, Request};
+use hyper::{self, Body, Client as HyperClient, Request, Uri};
 use hyper_rustls;
 use hyper_timeout::TimeoutConnector;
 use serde::{Deserialize, Serialize};
@@ -31,7 +27,7 @@ use serde_json;
 use std::fmt::{self, Display};
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::runtime::Runtime;
+use tokio::runtime::Builder;
 
 /// Errors that can be returned by an ApiEndpoint implementation.
 #[derive(Debug)]
@@ -44,7 +40,7 @@ pub enum ErrorKind {
 	#[fail(display = "Internal error: {}", _0)]
 	Internal(String),
 	#[fail(display = "Bad arguments: {}", _0)]
-	Argument(String),
+	_Argument(String),
 	#[fail(display = "Not found.")]
 	_NotFound,
 	#[fail(display = "Request error: {}", _0)]
@@ -89,8 +85,6 @@ impl From<Context<ErrorKind>> for Error {
 	}
 }
 
-pub type ClientResponseFuture<T> = Box<dyn Future<Item = T, Error = Error> + Send>;
-
 pub struct Client {
 	/// Whether to use socks proxy
 	pub use_socks: bool,
@@ -110,7 +104,7 @@ impl Client {
 	/// Helper function to easily issue a HTTP GET request against a given URL that
 	/// returns a JSON object. Handles request building, JSON deserialization and
 	/// response code checking.
-	pub fn get<'a, T>(&self, url: &'a str, api_secret: Option<String>) -> Result<T, Error>
+	pub fn _get<'a, T>(&self, url: &'a str, api_secret: Option<String>) -> Result<T, Error>
 	where
 		for<'de> T: Deserialize<'de>,
 	{
@@ -120,18 +114,16 @@ impl Client {
 	/// Helper function to easily issue an async HTTP GET request against a given
 	/// URL that returns a future. Handles request building, JSON deserialization
 	/// and response code checking.
-	pub fn get_async<'a, T>(
+	pub async fn _get_async<'a, T>(
 		&self,
 		url: &'a str,
 		api_secret: Option<String>,
-	) -> ClientResponseFuture<T>
+	) -> Result<T, Error>
 	where
 		for<'de> T: Deserialize<'de> + Send + 'static,
 	{
-		match self.build_request(url, "GET", api_secret, None) {
-			Ok(req) => Box::new(self.handle_request_async(req)),
-			Err(e) => Box::new(err(e)),
-		}
+		self.handle_request_async(self.build_request(url, "GET", api_secret, None)?)
+			.await
 	}
 
 	/// Helper function to easily issue a HTTP GET request
@@ -147,7 +139,7 @@ impl Client {
 	/// object as body on a given URL that returns a JSON object. Handles request
 	/// building, JSON serialization and deserialization, and response code
 	/// checking.
-	pub fn _post<IN, OUT>(
+	pub fn post<IN, OUT>(
 		&self,
 		url: &str,
 		api_secret: Option<String>,
@@ -165,28 +157,26 @@ impl Client {
 	/// provided JSON object as body on a given URL that returns a future. Handles
 	/// request building, JSON serialization and deserialization, and response code
 	/// checking.
-	pub fn _post_async<IN, OUT>(
+	pub async fn post_async<IN, OUT>(
 		&self,
 		url: &str,
 		input: &IN,
 		api_secret: Option<String>,
-	) -> ClientResponseFuture<OUT>
+	) -> Result<OUT, Error>
 	where
 		IN: Serialize,
 		OUT: Send + 'static,
 		for<'de> OUT: Deserialize<'de>,
 	{
-		match self.create_post_request(url, api_secret, input) {
-			Ok(req) => Box::new(self.handle_request_async(req)),
-			Err(e) => Box::new(err(e)),
-		}
+		self.handle_request_async(self.create_post_request(url, api_secret, input)?)
+			.await
 	}
 
 	/// Helper function to easily issue a HTTP POST request with the provided JSON
 	/// object as body on a given URL that returns nothing. Handles request
 	/// building, JSON serialization, and response code
 	/// checking.
-	pub fn post_no_ret<IN>(
+	pub fn _post_no_ret<IN>(
 		&self,
 		url: &str,
 		api_secret: Option<String>,
@@ -204,19 +194,18 @@ impl Client {
 	/// provided JSON object as body on a given URL that returns a future. Handles
 	/// request building, JSON serialization and deserialization, and response code
 	/// checking.
-	pub fn _post_no_ret_async<IN>(
+	pub async fn _post_no_ret_async<IN>(
 		&self,
 		url: &str,
 		api_secret: Option<String>,
 		input: &IN,
-	) -> ClientResponseFuture<()>
+	) -> Result<(), Error>
 	where
 		IN: Serialize,
 	{
-		match self.create_post_request(url, api_secret, input) {
-			Ok(req) => Box::new(self.send_request_async(req).and_then(|_| ok(()))),
-			Err(e) => Box::new(err(e)),
-		}
+		self.send_request_async(self.create_post_request(url, api_secret, input)?)
+			.await?;
+		Ok(())
 	}
 
 	fn build_request(
@@ -226,14 +215,13 @@ impl Client {
 		api_secret: Option<String>,
 		body: Option<String>,
 	) -> Result<Request<Body>, Error> {
-		let uri = url.parse::<Uri>().map_err::<Error, _>(|e: InvalidUri| {
-			e.context(ErrorKind::Argument(format!("Invalid url {}", url)))
-				.into()
-		})?;
+		let uri: Uri = url
+			.parse()
+			.map_err(|_| ErrorKind::RequestError(format!("Invalid url {}", url)))?;
 		let mut builder = Request::builder();
 		if let Some(api_secret) = api_secret {
 			let basic_auth = format!("Basic {}", to_base64(&format!("grin:{}", api_secret)));
-			builder.header(AUTHORIZATION, basic_auth);
+			builder = builder.header(AUTHORIZATION, basic_auth);
 		}
 
 		builder
@@ -277,120 +265,76 @@ impl Client {
 		})
 	}
 
-	fn handle_request_async<T>(&self, req: Request<Body>) -> ClientResponseFuture<T>
+	async fn handle_request_async<T>(&self, req: Request<Body>) -> Result<T, Error>
 	where
 		for<'de> T: Deserialize<'de> + Send + 'static,
 	{
-		Box::new(self.send_request_async(req).and_then(|data| {
-			serde_json::from_str(&data).map_err(|e| {
-				e.context(ErrorKind::ResponseError("Cannot parse response".to_owned()))
-					.into()
-			})
-		}))
+		let data = self.send_request_async(req).await?;
+		let ser = serde_json::from_str(&data)
+			.map_err(|e| e.context(ErrorKind::ResponseError("Cannot parse response".to_owned())))?;
+		Ok(ser)
 	}
 
-	fn send_request_async(
-		&self,
-		req: Request<Body>,
-	) -> Box<dyn Future<Item = String, Error = Error> + Send> {
-		//TODO: redundant code, enjoy figuring out type params for dynamic dispatch of client
-		match self.use_socks {
-			false => {
-				let https = hyper_rustls::HttpsConnector::new(1);
-				let mut connector = TimeoutConnector::new(https);
-				connector.set_connect_timeout(Some(Duration::from_secs(20)));
-				connector.set_read_timeout(Some(Duration::from_secs(20)));
-				connector.set_write_timeout(Some(Duration::from_secs(20)));
-				let client = hyper::Client::builder().build::<_, hyper::Body>(connector);
-				Box::new(
-					client
-						.request(req)
-						.map_err(|e| {
-							ErrorKind::RequestError(format!("Cannot make request: {}", e)).into()
-						})
-						.and_then(|resp| {
-							if !resp.status().is_success() {
-								Either::A(err(ErrorKind::RequestError(format!(
-									"Wrong response code: {} with data {:?}",
-									resp.status(),
-									resp.body()
-								))
-								.into()))
-							} else {
-								Either::B(
-									resp.into_body()
-										.map_err(|e| {
-											ErrorKind::RequestError(format!(
-												"Cannot read response body: {}",
-												e
-											))
-											.into()
-										})
-										.concat2()
-										.and_then(|ch| {
-											ok(String::from_utf8_lossy(&ch.to_vec()).to_string())
-										}),
-								)
-							}
-						}),
-				)
-			}
-			true => {
-				let addr = match self.socks_proxy_addr {
-					Some(a) => a,
-					None => {
-						return Box::new(result(Err(ErrorKind::RequestError(format!(
-							"Can't parse Socks proxy address"
-						))
-						.into())))
-					}
-				};
-				let socks_connector = Socksv5Connector::new(addr);
-				let mut connector = TimeoutConnector::new(socks_connector);
-				connector.set_connect_timeout(Some(Duration::from_secs(20)));
-				connector.set_read_timeout(Some(Duration::from_secs(20)));
-				connector.set_write_timeout(Some(Duration::from_secs(20)));
-				let client = hyper::Client::builder().build::<_, hyper::Body>(connector);
-				Box::new(
-					client
-						.request(req)
-						.map_err(|e| {
-							ErrorKind::RequestError(format!("Cannot make request: {}", e)).into()
-						})
-						.and_then(|resp| {
-							if !resp.status().is_success() {
-								Either::A(err(ErrorKind::RequestError(format!(
-									"Wrong response code: {} with data {:?}",
-									resp.status(),
-									resp.body()
-								))
-								.into()))
-							} else {
-								Either::B(
-									resp.into_body()
-										.map_err(|e| {
-											ErrorKind::RequestError(format!(
-												"Cannot read response body: {}",
-												e
-											))
-											.into()
-										})
-										.concat2()
-										.and_then(|ch| {
-											ok(String::from_utf8_lossy(&ch.to_vec()).to_string())
-										}),
-								)
-							}
-						}),
-				)
-			}
-		}
+	async fn send_request_async(&self, req: Request<Body>) -> Result<String, Error> {
+		let resp = if !self.use_socks {
+			let https = hyper_rustls::HttpsConnector::new();
+			let mut connector = TimeoutConnector::new(https);
+			connector.set_connect_timeout(Some(Duration::from_secs(20)));
+			connector.set_read_timeout(Some(Duration::from_secs(20)));
+			connector.set_write_timeout(Some(Duration::from_secs(20)));
+			let client = HyperClient::builder().build::<_, Body>(connector);
+
+			client.request(req).await
+		} else {
+			let addr = self.socks_proxy_addr.ok_or_else(|| {
+				ErrorKind::RequestError("Missing Socks proxy address".to_string())
+			})?;
+			let auth = format!("{}:{}", addr.ip(), addr.port());
+
+			let https = hyper_rustls::HttpsConnector::new();
+			let socks = hyper_socks2::SocksConnector {
+				proxy_addr: hyper::Uri::builder()
+					.scheme("socks5")
+					.authority(auth.as_str())
+					.path_and_query("/")
+					.build()
+					.map_err(|_| {
+						ErrorKind::RequestError("Can't parse Socks proxy address".to_string())
+					})?,
+				auth: None,
+				connector: https,
+			};
+			let mut connector = TimeoutConnector::new(socks);
+			connector.set_connect_timeout(Some(Duration::from_secs(20)));
+			connector.set_read_timeout(Some(Duration::from_secs(20)));
+			connector.set_write_timeout(Some(Duration::from_secs(20)));
+			let client = HyperClient::builder().build::<_, Body>(connector);
+
+			client.request(req).await
+		};
+		let resp =
+			resp.map_err(|e| ErrorKind::RequestError(format!("Cannot make request: {}", e)))?;
+
+		let raw = body::to_bytes(resp)
+			.await
+			.map_err(|e| ErrorKind::RequestError(format!("Cannot read response body: {}", e)))?;
+
+		Ok(String::from_utf8_lossy(&raw).to_string())
 	}
 
 	pub fn send_request(&self, req: Request<Body>) -> Result<String, Error> {
 		let task = self.send_request_async(req);
-		let mut rt =
-			Runtime::new().context(ErrorKind::Internal("can't create Tokio runtime".to_owned()))?;
-		Ok(rt.block_on(task)?)
+		scope(|s| {
+			let handle = s.spawn(|_| {
+				let mut rt = Builder::new()
+					.basic_scheduler()
+					.enable_all()
+					.build()
+					.context(ErrorKind::Internal("can't create Tokio runtime".to_owned()))?;
+				rt.block_on(task)
+			});
+			handle.join().unwrap()
+		})
+		.unwrap()
 	}
 }

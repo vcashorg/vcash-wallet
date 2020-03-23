@@ -23,10 +23,10 @@ args:
       long: account
       takes_value: true
       default_value: default
-  - data_dir:
-      help: Directory in which to store wallet files
-      short: dd
-      long: data_dir
+  - top_level_dir:
+      help: Top directory in which wallet files are stored (location of 'grin-wallet.toml')
+      short: t
+      long: top_level_dir
       takes_value: true
   - external:
       help: Listen on 0.0.0.0 interface to allow external connections (default is 127.0.0.1)
@@ -44,6 +44,8 @@ args:
       long: api_server_address
       takes_value: true
 subcommands:
+  - cli:
+      about: Start the wallet in interactive CLI mode (EXPERIMENTAL and UNDER DEVELOPMENT)
   - account:
       about: List wallet accounts or create a new account
       args:
@@ -144,6 +146,15 @@ subcommands:
             short: d
             long: dest
             takes_value: true
+        - request_payment_proof:
+            help: Request a payment proof from the recipient. If sending to a tor address, the address will be filled automatically.
+            short: y
+            long: request_payment_proof
+        - proof_address:
+            help: Recipient proof address. If not using TOR, must be provided seprarately by the recipient
+            short: z
+            long: proof_address
+            takes_value: true
         - fluff:
             help: Fluff the transaction (ignore Dandelion relay protocol)
             short: f
@@ -158,10 +169,10 @@ subcommands:
             short: t
             long: stored_tx
             takes_value: true
-        - slate_version:
-            help: Target slate version to output/send to receiver
-            short: v
-            long: slate_version
+        - ttl_blocks:
+            help: If present, the number of blocks from the current after which wallets should refuse to process transactions further
+            short: b
+            long: ttl_blocks
             takes_value: true
   - receive:
       about: Processes a transaction file to accept a transfer from a sender
@@ -207,11 +218,6 @@ subcommands:
             help: Optional participant message to include
             short: g
             long: message
-            takes_value: true
-        - slate_version:
-            help: Target slate version to output/send to receiver
-            short: v
-            long: slate_version
             takes_value: true
         - dest:
             help: Name of destination slate output file
@@ -264,6 +270,11 @@ subcommands:
             help: Partial transaction to process, expects the invoicer's transaction file.
             short: i
             long: input
+            takes_value: true
+        - ttl_blocks:
+            help: If present, the number of blocks from the current after which wallets should refuse to process transactions further
+            short: b
+            long: ttl_blocks
             takes_value: true
   - outputs:
       about: Raw wallet output info (list of outputs)
@@ -349,14 +360,14 @@ subcommands:
             short: r
             long: recover
             takes_value: false
+  - open:
+      about: Opens a wallet (interactive mode only)
+  - close:
+      about: Closes the wallet (interactive mode only)
   - recover:
-      about: Recover a wallet.seed file from a recovery phrase (default) or displays a recovery phrase for an existing seed file
-      args:
-        - display:
-            help: Display wallet recovery phrase
-            short: d
-            long: display
-            takes_value: false
+      about: Displays a recovery phrase for the wallet. (use `init -r` to perform recovery)
+  - address:
+      about: Display the wallet's payment proof address
   - scan:
       about: Checks a wallet's outputs against a live node, repairing and restoring missing outputs if required
       args:
@@ -369,5 +380,31 @@ subcommands:
             help: If given, the first block from which to start the scan (default 1)
             short: h
             long: start_height
-            default_value: "1"
             takes_value: true
+        - backwards_from_tip:
+            help: If given, start scan b blocks back from the tip
+            short: b
+            long: backwards_from_tip,
+            takes_value: true
+  - export_proof:
+      about: Export a payment proof from a completed transaction
+      args:
+          - output:
+              help: Output proof file
+              index: 1
+          - id:
+              help: If specified, retrieve the proof for the given transaction ID
+              short: i
+              long: id
+              takes_value: true
+          - txid:
+              help: If specified, retrieve the proof for the given Slate ID
+              short: t
+              long: txid
+              takes_value: true
+  - verify_proof:
+      about: Verify a payment proof
+      args:
+          - input:
+              help: Filename of a proof file
+              index: 1

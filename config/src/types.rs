@@ -93,7 +93,7 @@ impl WalletConfig {
 	/// Use value from config file, defaulting to sensible value if missing.
 	pub fn owner_api_listen_port(&self) -> u16 {
 		self.owner_api_listen_port
-			.unwrap_or(WalletConfig::default_owner_api_listen_port())
+			.unwrap_or_else(WalletConfig::default_owner_api_listen_port)
 	}
 
 	/// Owner API listen address
@@ -115,6 +115,9 @@ pub enum ConfigError {
 
 	/// Error serializing config values
 	SerializationError(String),
+
+	/// Path doesn't exist
+	PathNotFoundError(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -134,6 +137,7 @@ impl fmt::Display for ConfigError {
 			ConfigError::SerializationError(ref message) => {
 				write!(f, "Error serializing configuration: {}", message)
 			}
+			ConfigError::PathNotFoundError(ref message) => write!(f, "Path not found: {}", message),
 		}
 	}
 }
@@ -162,7 +166,7 @@ impl From<io::Error> for ConfigError {
 	fn from(error: io::Error) -> ConfigError {
 		ConfigError::FileIOError(
 			String::from(""),
-			String::from(format!("Error loading config file: {}", error)),
+			format!("Error loading config file: {}", error),
 		)
 	}
 }

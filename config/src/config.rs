@@ -32,17 +32,20 @@ use crate::types::{TorConfig, WalletConfig};
 use crate::util::logger::LoggingConfig;
 
 /// Wallet configuration file name
-pub const WALLET_CONFIG_FILE_NAME: &'static str = "vcash-wallet.toml";
-const WALLET_LOG_FILE_NAME: &'static str = "vcash-wallet.log";
-const GRIN_HOME: &'static str = ".vcash";
+pub const WALLET_CONFIG_FILE_NAME: &str = "vcash-wallet.toml";
+const WALLET_LOG_FILE_NAME: &str = "vcash-wallet.log";
+const GRIN_HOME: &str = ".vcash";
 /// Wallet data directory
-pub const GRIN_WALLET_DIR: &'static str = "wallet_data";
+pub const GRIN_WALLET_DIR: &str = "wallet_data";
 /// Node API secret
-pub const API_SECRET_FILE_NAME: &'static str = ".api_secret";
+pub const API_SECRET_FILE_NAME: &str = ".api_secret";
 /// Owner API secret
-pub const OWNER_API_SECRET_FILE_NAME: &'static str = ".owner_api_secret";
+pub const OWNER_API_SECRET_FILE_NAME: &str = ".owner_api_secret";
 
-fn get_grin_path(chain_type: &global::ChainTypes) -> Result<PathBuf, ConfigError> {
+fn get_grin_path(
+	chain_type: &global::ChainTypes,
+	create_path: bool,
+) -> Result<PathBuf, ConfigError> {
 	// Check if grin dir exists
 	let mut grin_path = match dirs::home_dir() {
 		Some(p) => p,
@@ -51,10 +54,17 @@ fn get_grin_path(chain_type: &global::ChainTypes) -> Result<PathBuf, ConfigError
 	grin_path.push(GRIN_HOME);
 	grin_path.push(chain_type.shortname());
 	// Create if the default path doesn't exist
-	if !grin_path.exists() {
+	if !grin_path.exists() && create_path {
 		fs::create_dir_all(grin_path.clone())?;
 	}
-	Ok(grin_path)
+
+	if !grin_path.exists() {
+		Err(ConfigError::PathNotFoundError(String::from(
+			grin_path.to_str().unwrap(),
+		)))
+	} else {
+		Ok(grin_path)
+	}
 }
 
 fn check_config_current_dir(path: &str) -> Option<PathBuf> {
@@ -70,6 +80,13 @@ fn check_config_current_dir(path: &str) -> Option<PathBuf> {
 		return Some(c);
 	}
 	None
+}
+
+/// Whether a config file exists at the given directory
+pub fn config_file_exists(path: &str) -> bool {
+	let mut path = PathBuf::from(path);
+	path.push(WALLET_CONFIG_FILE_NAME);
+	path.exists()
 }
 
 /// Create file with api secret
@@ -104,9 +121,9 @@ fn check_api_secret_file(
 ) -> Result<(), ConfigError> {
 	let grin_path = match data_path {
 		Some(p) => p,
-		None => get_grin_path(chain_type)?,
+		None => get_grin_path(chain_type, false)?,
 	};
-	let mut api_secret_path = grin_path.clone();
+	let mut api_secret_path = grin_path;
 	api_secret_path.push(file_name);
 	if !api_secret_path.exists() {
 		init_api_secret(&api_secret_path)
@@ -119,17 +136,23 @@ fn check_api_secret_file(
 pub fn initial_setup_wallet(
 	chain_type: &global::ChainTypes,
 	data_path: Option<PathBuf>,
+	create_path: bool,
 ) -> Result<GlobalWalletConfig, ConfigError> {
-	check_api_secret_file(chain_type, data_path.clone(), OWNER_API_SECRET_FILE_NAME)?;
-	check_api_secret_file(chain_type, data_path.clone(), API_SECRET_FILE_NAME)?;
+	if create_path {
+		if let Some(p) = data_path.clone() {
+			fs::create_dir_all(p)?;
+		}
+	}
 	// Use config file if current directory if it exists, .grin home otherwise
-	if let Some(p) = check_config_current_dir(WALLET_CONFIG_FILE_NAME) {
-		GlobalWalletConfig::new(p.to_str().unwrap())
+	let (path, config) = if let Some(p) = check_config_current_dir(WALLET_CONFIG_FILE_NAME) {
+		let mut path = p.clone();
+		path.pop();
+		(path, GlobalWalletConfig::new(p.to_str().unwrap())?)
 	} else {
 		// Check if grin dir exists
 		let grin_path = match data_path {
 			Some(p) => p,
-			None => get_grin_path(chain_type)?,
+			None => get_grin_path(chain_type, create_path)?,
 		};
 
 		// Get path to default config file
@@ -137,16 +160,28 @@ pub fn initial_setup_wallet(
 		config_path.push(WALLET_CONFIG_FILE_NAME);
 
 		// Return defaults if file doesn't exist
-		if !config_path.exists() {
-			let mut default_config = GlobalWalletConfig::for_chain(chain_type);
-			default_config.config_file_path = Some(config_path);
-			// update paths relative to current dir
-			default_config.update_paths(&grin_path);
-			Ok(default_config)
-		} else {
-			GlobalWalletConfig::new(config_path.to_str().unwrap())
+		match config_path.clone().exists() {
+			false => {
+				let mut default_config = GlobalWalletConfig::for_chain(chain_type);
+				default_config.config_file_path = Some(config_path);
+				// update paths relative to current dir
+				default_config.update_paths(&grin_path);
+				(grin_path, default_config)
+			}
+			true => {
+				let mut path = config_path.clone();
+				path.pop();
+				(
+					path,
+					GlobalWalletConfig::new(config_path.to_str().unwrap())?,
+				)
+			}
 		}
-	}
+	};
+
+	check_api_secret_file(chain_type, Some(path.clone()), OWNER_API_SECRET_FILE_NAME)?;
+	check_api_secret_file(chain_type, Some(path), API_SECRET_FILE_NAME)?;
+	Ok(config)
 }
 
 impl Default for GlobalWalletConfigMembers {
@@ -213,25 +248,17 @@ impl GlobalWalletConfig {
 		let mut file = File::open(self.config_file_path.as_mut().unwrap())?;
 		let mut contents = String::new();
 		file.read_to_string(&mut contents)?;
-		let decoded: Result<GlobalWalletConfigMembers, toml::de::Error> = toml::from_str(&contents);
+		let fixed = GlobalWalletConfig::fix_warning_level(contents);
+		let decoded: Result<GlobalWalletConfigMembers, toml::de::Error> = toml::from_str(&fixed);
 		match decoded {
 			Ok(gc) => {
 				self.members = Some(gc);
-				return Ok(self);
+				Ok(self)
 			}
-			Err(e) => {
-				return Err(ConfigError::ParseError(
-					String::from(
-						self.config_file_path
-							.as_mut()
-							.unwrap()
-							.to_str()
-							.unwrap()
-							.clone(),
-					),
-					String::from(format!("{}", e)),
-				));
-			}
+			Err(e) => Err(ConfigError::ParseError(
+				String::from(self.config_file_path.as_mut().unwrap().to_str().unwrap()),
+				format!("{}", e),
+			)),
 		}
 	}
 
@@ -273,22 +300,32 @@ impl GlobalWalletConfig {
 		let encoded: Result<String, toml::ser::Error> =
 			toml::to_string(self.members.as_mut().unwrap());
 		match encoded {
-			Ok(enc) => return Ok(enc),
-			Err(e) => {
-				return Err(ConfigError::SerializationError(String::from(format!(
-					"{}",
-					e
-				))));
-			}
+			Ok(enc) => Ok(enc),
+			Err(e) => Err(ConfigError::SerializationError(format!("{}", e))),
 		}
 	}
 
 	/// Write configuration to a file
 	pub fn write_to_file(&mut self, name: &str) -> Result<(), ConfigError> {
 		let conf_out = self.ser_config()?;
-		let conf_out = insert_comments(conf_out);
+		let fixed_config = GlobalWalletConfig::fix_log_level(conf_out);
+		let commented_config = insert_comments(fixed_config);
 		let mut file = File::create(name)?;
-		file.write_all(conf_out.as_bytes())?;
+		file.write_all(commented_config.as_bytes())?;
 		Ok(())
+	}
+
+	// For forwards compatibility old config needs `Warning` log level changed to standard log::Level `WARN`
+	fn fix_warning_level(conf: String) -> String {
+		conf.replace("Warning", "WARN")
+	}
+
+	// For backwards compatibility only first letter of log level should be capitalised.
+	fn fix_log_level(conf: String) -> String {
+		conf.replace("TRACE", "Trace")
+			.replace("DEBUG", "Debug")
+			.replace("INFO", "Info")
+			.replace("WARN", "Warning")
+			.replace("ERROR", "Error")
 	}
 }

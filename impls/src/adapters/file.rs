@@ -16,7 +16,7 @@
 use std::fs::File;
 use std::io::{Read, Write};
 
-use crate::libwallet::{Error, ErrorKind, Slate};
+use crate::libwallet::{Error, ErrorKind, Slate, SlateVersion, VersionedSlate};
 use crate::{SlateGetter, SlatePutter};
 use std::path::PathBuf;
 
@@ -26,8 +26,22 @@ pub struct PathToSlate(pub PathBuf);
 impl SlatePutter for PathToSlate {
 	fn put_tx(&self, slate: &Slate) -> Result<(), Error> {
 		let mut pub_tx = File::create(&self.0)?;
+		let _r: crate::adapters::Reminder;
+		let out_slate = {
+			// TODO: This will need to be filled with any incompatibilities in the V4 Slate
+			if false {
+				warn!("Transaction contains features that require grin-wallet 4.0.0 or later");
+				warn!("Please ensure the other party is running grin-wallet v4.0.0 or later before sending");
+				VersionedSlate::into_version(slate.clone(), SlateVersion::V4)?
+			} else {
+				let mut s = slate.clone();
+				s.version_info.version = 3;
+				s.version_info.orig_version = 3;
+				VersionedSlate::into_version(s, SlateVersion::V3)?
+			}
+		};
 		pub_tx.write_all(
-			serde_json::to_string(slate)
+			serde_json::to_string(&out_slate)
 				.map_err(|_| ErrorKind::SlateSer)?
 				.as_bytes(),
 		)?;

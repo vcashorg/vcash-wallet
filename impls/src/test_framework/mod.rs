@@ -45,7 +45,7 @@ fn get_output_local(chain: &chain::Chain, commit: &pedersen::Commitment) -> Opti
 	];
 
 	for x in outputs.iter() {
-		if let Ok(_) = chain.is_unspent(&x) {
+		if chain.get_unspent(&x).unwrap().is_some() {
 			let block_height = chain.get_header_for_output(&x).unwrap().height;
 			let output_pos = chain.get_output_pos(&x.commit).unwrap_or(0);
 			return Some(api::Output::new(&commit, block_height, output_pos));
@@ -110,14 +110,13 @@ fn height_range_to_pmmr_indices_local(
 	}
 }
 
-/// Adds a block with a given reward to the chain and mines it
-pub fn add_block_with_reward(
+fn create_block_with_reward(
 	chain: &Chain,
+	prev: core::core::BlockHeader,
 	txs: Vec<&Transaction>,
 	reward_output: Output,
 	reward_kernel: TxKernel,
-) {
-	let prev = chain.head_header().unwrap();
+) -> core::core::Block {
 	let next_header_info = consensus::next_difficulty(1, chain.difficulty_iter().unwrap());
 	let mut b = core::core::Block::new(
 		&prev,
@@ -136,9 +135,50 @@ pub fn add_block_with_reward(
 		global::min_edge_bits(),
 	)
 	.unwrap();
-	get_block_bit_diff(&mut b);
-	chain.process_block(b, chain::Options::SKIP_POW).unwrap();
-	chain.validate(false).unwrap();
+	b
+}
+
+/// Adds a block with a given reward to the chain and mines it
+pub fn add_block_with_reward(
+	chain: &Chain,
+	txs: Vec<&Transaction>,
+	reward_output: Output,
+	reward_kernel: TxKernel,
+) {
+	let prev = chain.head_header().unwrap();
+	let mut block = create_block_with_reward(chain, prev, txs, reward_output, reward_kernel);
+	process_block(chain, &mut block);
+}
+
+/// adds a reward output to a wallet, includes that reward in a block
+/// and return the block
+pub fn create_block_for_wallet<'a, L, C, K>(
+	chain: &Chain,
+	prev: core::core::BlockHeader,
+	txs: Vec<&Transaction>,
+	wallet: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K> + 'a>>>,
+	keychain_mask: Option<&SecretKey>,
+) -> Result<core::core::Block, libwallet::Error>
+where
+	L: WalletLCProvider<'a, C, K>,
+	C: NodeClient + 'a,
+	K: keychain::Keychain + 'a,
+{
+	// build block fees
+	let fee_amt = txs.iter().map(|tx| tx.fee()).sum();
+	let block_fees = BlockFees {
+		fees: fee_amt,
+		key_id: None,
+		height: prev.height + 1,
+	};
+	// build coinbase (via api) and add block
+	let coinbase_tx = {
+		let mut w_lock = wallet.lock();
+		let w = w_lock.lc_provider()?.wallet_inst()?;
+		foreign::build_coinbase(&mut **w, keychain_mask, &block_fees, false)?
+	};
+	let block = create_block_with_reward(chain, prev, txs, coinbase_tx.output, coinbase_tx.kernel);
+	Ok(block)
 }
 
 /// adds a reward output to a wallet, includes that reward in a block, mines
@@ -155,22 +195,18 @@ where
 	C: NodeClient + 'a,
 	K: keychain::Keychain + 'a,
 {
-	// build block fees
 	let prev = chain.head_header().unwrap();
-	let fee_amt = txs.iter().map(|tx| tx.fee()).sum();
-	let block_fees = BlockFees {
-		fees: fee_amt,
-		key_id: None,
-		height: prev.height + 1,
-	};
-	// build coinbase (via api) and add block
-	let coinbase_tx = {
-		let mut w_lock = wallet.lock();
-		let w = w_lock.lc_provider()?.wallet_inst()?;
-		foreign::build_coinbase(&mut **w, keychain_mask, &block_fees, false)?
-	};
-	add_block_with_reward(chain, txs, coinbase_tx.output, coinbase_tx.kernel);
+	let mut block = create_block_for_wallet(chain, prev, txs, wallet, keychain_mask)?;
+	process_block(chain, &mut block);
 	Ok(())
+}
+
+pub fn process_block(chain: &Chain, block: &mut core::core::Block) {
+	get_block_bit_diff(block);
+	chain
+		.process_block(block.clone(), chain::Options::MINE)
+		.unwrap();
+	chain.validate(false).unwrap();
 }
 
 /// Award a blocks to a wallet directly
@@ -224,15 +260,14 @@ where
 		let slate_i = owner::init_send_tx(&mut **w, keychain_mask, args, test_mode)?;
 		let slate = client.send_tx_slate_direct(dest, &slate_i)?;
 		owner::tx_lock_outputs(&mut **w, keychain_mask, &slate, 0)?;
-		let slate = owner::finalize_tx(&mut **w, keychain_mask, &slate)?;
-		slate
+		owner::finalize_tx(&mut **w, keychain_mask, &slate)?
 	};
 	let client = {
 		let mut w_lock = wallet.lock();
 		let w = w_lock.lc_provider()?.wallet_inst()?;
 		w.w2n_client().clone()
 	};
-	owner::post_tx(&client, &slate.tx, false)?; // mines a block
+	owner::post_tx(&client, slate.tx_or_err()?, false)?; // mines a block
 	Ok(())
 }
 
@@ -255,7 +290,7 @@ where
 fn get_block_bit_diff(block: &mut core::core::Block) {
 	block.header.bits = 0x2100ffff;
 	let coin_base_str = core::core::get_grin_magic_data_str(block.header.hash());
-	block.aux_data.coinbase_tx = util::from_hex(coin_base_str).unwrap();
+	block.aux_data.coinbase_tx = util::from_hex(coin_base_str.as_str()).unwrap();
 	block.aux_data.aux_header.merkle_root = block.aux_data.coinbase_tx.dhash();
 	block.aux_data.aux_header.nbits = block.header.bits;
 }

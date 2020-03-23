@@ -53,7 +53,8 @@ pub trait ForeignRpc {
 			"Ok": {
 				"foreign_api_version": 2,
 				"supported_slate_versions": [
-					"V2"
+					"V4",
+					"V3"
 				]
 			}
 		}
@@ -133,6 +134,8 @@ pub trait ForeignRpc {
 				"height": "4",
 				"id": "0436430c-2b02-624c-2032-570501212b00",
 				"lock_height": "4",
+				"ttl_cutoff_height": null,
+				"payment_proof": null,
 				"num_participants": 2,
 				"participant_data": [
 				{
@@ -251,6 +254,8 @@ pub trait ForeignRpc {
 			"fee": "7000000",
 			"height": "5",
 			"lock_height": "0",
+			"ttl_cutoff_height": null,
+			"payment_proof": null,
 			"participant_data": [
 				{
 					"id": "0",
@@ -279,6 +284,8 @@ pub trait ForeignRpc {
 				"height": "5",
 				"id": "0436430c-2b02-624c-2032-570501212b00",
 				"lock_height": "0",
+				"ttl_cutoff_height": null,
+				"payment_proof": null,
 				"num_participants": 2,
 				"participant_data": [
 				{
@@ -414,6 +421,8 @@ pub trait ForeignRpc {
 			"fee": "7000000",
 			"height": "5",
 			"lock_height": "0",
+			"ttl_cutoff_height": null,
+			"payment_proof": null,
 			"participant_data": [
 				{
 					"id": "1",
@@ -447,6 +456,8 @@ pub trait ForeignRpc {
 				"height": "5",
 				"id": "0436430c-2b02-624c-2032-570501212b00",
 				"lock_height": "0",
+				"ttl_cutoff_height": null,
+				"payment_proof": null,
 				"num_participants": 2,
 				"participant_data": [
 					{
@@ -543,21 +554,22 @@ where
 		message: Option<String>,
 	) -> Result<VersionedSlate, ErrorKind> {
 		let version = in_slate.version();
+		let slate_from = Slate::from(in_slate);
 		let out_slate = Foreign::receive_tx(
 			self,
-			&Slate::from(in_slate),
+			&slate_from,
 			dest_acct_name.as_ref().map(String::as_str),
 			message,
 		)
 		.map_err(|e| e.kind())?;
-		Ok(VersionedSlate::into_version(out_slate, version))
+		Ok(VersionedSlate::into_version(out_slate, version).map_err(|e| e.kind())?)
 	}
 
 	fn finalize_invoice_tx(&self, in_slate: VersionedSlate) -> Result<VersionedSlate, ErrorKind> {
 		let version = in_slate.version();
 		let out_slate =
 			Foreign::finalize_invoice_tx(self, &Slate::from(in_slate)).map_err(|e| e.kind())?;
-		Ok(VersionedSlate::into_version(out_slate, version))
+		Ok(VersionedSlate::into_version(out_slate, version).map_err(|e| e.kind())?)
 	}
 }
 
@@ -662,9 +674,7 @@ pub fn run_doctest_foreign(
 	let _ = lc.set_top_level_directory(&format!("{}/wallet2", test_dir));
 	lc.create_wallet(None, Some(rec_phrase_2), 32, empty_string.clone(), false)
 		.unwrap();
-	let mask2 = lc
-		.open_wallet(None, empty_string.clone(), use_token, true)
-		.unwrap();
+	let mask2 = lc.open_wallet(None, empty_string, use_token, true).unwrap();
 	let wallet2 = Arc::new(Mutex::new(wallet2));
 
 	wallet_proxy.add_wallet(

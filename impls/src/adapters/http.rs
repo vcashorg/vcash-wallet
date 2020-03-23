@@ -14,6 +14,7 @@
 
 /// HTTP Wallet 'plugin' implementation
 use crate::client_utils::{Client, ClientError};
+use crate::libwallet::slate_versions::{SlateVersion, VersionedSlate};
 use crate::libwallet::{Error, ErrorKind, Slate};
 use crate::SlateSender;
 use serde::Serialize;
@@ -24,7 +25,7 @@ use std::path::MAIN_SEPARATOR;
 use crate::tor::config as tor_config;
 use crate::tor::process as tor_process;
 
-const TOR_CONFIG_PATH: &'static str = "tor/sender";
+const TOR_CONFIG_PATH: &str = "tor/sender";
 
 #[derive(Clone)]
 pub struct HttpSlateSender {
@@ -64,7 +65,7 @@ impl HttpSlateSender {
 	}
 
 	/// Check version of the listening wallet
-	fn check_other_version(&self, url: &str) -> Result<(), Error> {
+	fn check_other_version(&self, url: &str) -> Result<SlateVersion, Error> {
 		let req = json!({
 			"jsonrpc": "2.0",
 			"method": "check_version",
@@ -77,10 +78,9 @@ impl HttpSlateSender {
 			let err_string = format!("{}", e);
 			if err_string.contains("404") {
 				// Report that the other version of the wallet is out of date
-				report = format!(
-					"Other wallet is incompatible and requires an upgrade. \
-					 Please urge the other wallet owner to upgrade and try the transaction again."
-				);
+				report = "Other wallet is incompatible and requires an upgrade. \
+				          Please urge the other wallet owner to upgrade and try the transaction again."
+					.to_string();
 			}
 			error!("{}", report);
 			ErrorKind::ClientCallback(report)
@@ -106,18 +106,21 @@ impl HttpSlateSender {
 
 		// trivial tests for now, but will be expanded later
 		if foreign_api_version < 2 {
-			let report = format!("Other wallet reports unrecognized API format.");
+			let report = "Other wallet reports unrecognized API format.".to_string();
 			error!("{}", report);
 			return Err(ErrorKind::ClientCallback(report).into());
 		}
 
-		if !supported_slate_versions.contains(&"V3".to_owned()) {
-			let report = format!("Unable to negotiate slate format with other wallet.");
-			error!("{}", report);
-			return Err(ErrorKind::ClientCallback(report).into());
+		if supported_slate_versions.contains(&"V4".to_owned()) {
+			return Ok(SlateVersion::V4);
+		}
+		if supported_slate_versions.contains(&"V3".to_owned()) {
+			return Ok(SlateVersion::V3);
 		}
 
-		Ok(())
+		let report = "Unable to negotiate slate format with other wallet.".to_string();
+		error!("{}", report);
+		Err(ErrorKind::ClientCallback(report).into())
 	}
 
 	fn post<IN>(
@@ -132,7 +135,7 @@ impl HttpSlateSender {
 		let mut client = Client::new();
 		if self.use_socks {
 			client.use_socks = true;
-			client.socks_proxy_addr = self.socks_proxy_addr.clone();
+			client.socks_proxy_addr = self.socks_proxy_addr;
 		}
 		let req = client.create_post_request(url, api_secret, &input)?;
 		let res = client.send_request(req)?;
@@ -140,6 +143,10 @@ impl HttpSlateSender {
 	}
 }
 
+#[deprecated(
+	since = "3.0.0",
+	note = "Remember to handle SlateV4 incompatibilities here"
+)]
 impl SlateSender for HttpSlateSender {
 	fn send_tx(&self, slate: &Slate) -> Result<Slate, Error> {
 		let trailing = match self.base_url.ends_with('/') {
@@ -163,25 +170,37 @@ impl SlateSender for HttpSlateSender {
 				&tor_dir,
 				&self.socks_proxy_addr.unwrap().to_string(),
 			)
-			.map_err(|e| ErrorKind::TorConfig(format!("{:?}", e).into()))?;
+			.map_err(|e| ErrorKind::TorConfig(format!("{:?}", e)))?;
 			// Start TOR process
 			tor.torrc_path(&format!("{}/torrc", &tor_dir))
 				.working_dir(&tor_dir)
 				.timeout(20)
 				.completion_percent(100)
 				.launch()
-				.map_err(|e| ErrorKind::TorProcess(format!("{:?}", e).into()))?;
+				.map_err(|e| ErrorKind::TorProcess(format!("{:?}", e)))?;
 		}
 
-		self.check_other_version(&url_str)?;
-
+		let slate_send = match self.check_other_version(&url_str)? {
+			SlateVersion::V4 => VersionedSlate::into_version(slate.clone(), SlateVersion::V4)?,
+			SlateVersion::V3 => {
+				let mut slate = slate.clone();
+				let _r: crate::adapters::Reminder;
+				//TODO: Fill out with Slate V4 incompatibilities
+				if false {
+					return Err(ErrorKind::ClientCallback("feature x requested, but other wallet does not support feature x. Please urge other user to upgrade, or re-send tx without feature x".into()).into());
+				}
+				slate.version_info.version = 3;
+				slate.version_info.orig_version = 3;
+				VersionedSlate::into_version(slate, SlateVersion::V3)?
+			}
+		};
 		// Note: not using easy-jsonrpc as don't want the dependencies in this crate
 		let req = json!({
 			"jsonrpc": "2.0",
 			"method": "receive_tx",
 			"id": 1,
 			"params": [
-						slate,
+						slate_send,
 						null,
 						null
 					]
@@ -219,7 +238,7 @@ pub struct SchemeNotHttp;
 
 impl Into<Error> for SchemeNotHttp {
 	fn into(self) -> Error {
-		let err_str = format!("url scheme must be http",);
+		let err_str = "url scheme must be http".to_string();
 		ErrorKind::GenericError(err_str).into()
 	}
 }

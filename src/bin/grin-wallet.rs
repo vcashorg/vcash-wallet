@@ -16,9 +16,9 @@
 
 #[macro_use]
 extern crate clap;
-
 #[macro_use]
 extern crate log;
+use crate::config::ConfigError;
 use crate::core::global;
 use crate::util::init_logger;
 use clap::App;
@@ -27,6 +27,7 @@ use grin_wallet_impls::HTTPNodeClient;
 use grin_wallet_util::grin_core as core;
 use grin_wallet_util::grin_util as util;
 use std::env;
+use std::path::PathBuf;
 
 use vcash_wallet::cmd;
 
@@ -80,6 +81,19 @@ fn real_main() -> i32 {
 	};
 
 	let mut current_dir = None;
+	let mut create_path = false;
+
+	if args.is_present("top_level_dir") {
+		let res = args.value_of("top_level_dir");
+		match res {
+			Some(d) => {
+				current_dir = Some(PathBuf::from(d));
+			}
+			None => {
+				warn!("Argument --top_level_dir needs a value. Defaulting to current directory")
+			}
+		}
+	}
 
 	// special cases for certain lifecycle commands
 	match args.subcommand() {
@@ -89,21 +103,36 @@ fn real_main() -> i32 {
 					panic!("Error creating config file: {}", e);
 				}));
 			}
+			create_path = true;
 		}
-		("recover", _) => {}
 		_ => {}
 	}
 
 	// Load relevant config, try and load a wallet config file
 	// Use defaults for configuration if config file not found anywhere
-	let mut config = config::initial_setup_wallet(&chain_type, current_dir).unwrap_or_else(|e| {
-		panic!("Error loading wallet configuration: {}", e);
-	});
+	let mut config = match config::initial_setup_wallet(&chain_type, current_dir, create_path) {
+		Ok(c) => c,
+		Err(e) => match e {
+			ConfigError::PathNotFoundError(m) => {
+				println!("Wallet configuration not found at {}. (Run `grin-wallet init` to create a new wallet)", m);
+				return 0;
+			}
+			m => {
+				println!("Unable to load wallet configuration: {} (Run `grin-wallet init` to create a new wallet)", m);
+				return 0;
+			}
+		},
+	};
 
 	//config.members.as_mut().unwrap().wallet.chain_type = Some(chain_type);
 
 	// Load logging config
-	let l = config.members.as_mut().unwrap().logging.clone().unwrap();
+	let mut l = config.members.as_mut().unwrap().logging.clone().unwrap();
+	// no logging to stdout if we're running cli
+	match args.subcommand() {
+		("cli", _) => l.log_to_stdout = true,
+		_ => {}
+	};
 	init_logger(Some(l), None);
 	info!(
 		"Using wallet configuration file at {}",

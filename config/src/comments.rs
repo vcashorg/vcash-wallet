@@ -236,18 +236,18 @@ fn comments() -> HashMap<String, String> {
 }
 
 fn get_key(line: &str) -> String {
-	if line.contains("[") && line.contains("]") {
-		return line.to_owned();
-	} else if line.contains("=") {
-		return line.split("=").collect::<Vec<&str>>()[0].trim().to_owned();
+	if line.contains('[') && line.contains(']') {
+		line.to_owned()
+	} else if line.contains('=') {
+		line.split('=').collect::<Vec<&str>>()[0].trim().to_owned()
 	} else {
-		return "NOT_FOUND".to_owned();
+		"NOT_FOUND".to_owned()
 	}
 }
 
 pub fn insert_comments(orig: String) -> String {
 	let comments = comments();
-	let lines: Vec<&str> = orig.split("\n").collect();
+	let lines: Vec<&str> = orig.split('\n').collect();
 	let mut out_lines = vec![];
 	for l in lines {
 		let key = get_key(l);
@@ -261,5 +261,5 @@ pub fn insert_comments(orig: String) -> String {
 	for l in out_lines {
 		ret_val.push_str(&l);
 	}
-	ret_val.to_owned()
+	ret_val
 }

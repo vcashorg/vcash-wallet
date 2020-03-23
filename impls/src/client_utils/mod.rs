@@ -13,7 +13,6 @@
 // limitations under the License.
 
 mod client;
-mod socksv5;
+pub mod json_rpc;
 
-pub use self::socksv5::Socksv5Connector;
 pub use client::{Client, Error as ClientError};

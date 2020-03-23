@@ -18,7 +18,7 @@
 use crate::config::{TorConfig, WalletConfig};
 use crate::error::{Error, ErrorKind};
 use crate::grin_core::core::hash::Hash;
-use crate::grin_core::core::{Output, Transaction, TxKernel};
+use crate::grin_core::core::{Output, TokenTxKernel, Transaction, TxKernel};
 use crate::grin_core::libtx::{aggsig, secp_ser};
 use crate::grin_core::{global, ser};
 use crate::grin_keychain::{Identifier, Keychain};
@@ -27,12 +27,16 @@ use crate::grin_util::secp::key::{PublicKey, SecretKey};
 use crate::grin_util::secp::{self, pedersen, Secp256k1};
 use crate::grin_util::ZeroingString;
 use crate::slate::ParticipantMessages;
+use crate::slate_versions::ser as dalek_ser;
 use chrono::prelude::*;
+use ed25519_dalek::PublicKey as DalekPublicKey;
+use ed25519_dalek::Signature as DalekSignature;
 use failure::ResultExt;
 use serde;
 use serde_json;
 use std::collections::HashMap;
 use std::fmt;
+use std::time::Duration;
 use uuid::Uuid;
 
 /// Combined trait to allow dynamic wallet dispatch
@@ -234,19 +238,19 @@ where
 	fn batch_no_mask<'a>(&'a mut self) -> Result<Box<dyn WalletOutputBatch<K> + 'a>, Error>;
 
 	/// Return the current child Index
-	fn current_child_index<'a>(&mut self, parent_key_id: &Identifier) -> Result<u32, Error>;
+	fn current_child_index(&mut self, parent_key_id: &Identifier) -> Result<u32, Error>;
 
 	/// Next child ID when we want to create a new output, based on current parent
-	fn next_child<'a>(&mut self, keychain_mask: Option<&SecretKey>) -> Result<Identifier, Error>;
+	fn next_child(&mut self, keychain_mask: Option<&SecretKey>) -> Result<Identifier, Error>;
 
 	/// last verified height of outputs directly descending from the given parent key
-	fn last_confirmed_height<'a>(&mut self) -> Result<u64, Error>;
+	fn last_confirmed_height(&mut self) -> Result<u64, Error>;
 
 	/// last block scanned during scan or restore
-	fn last_scanned_block<'a>(&mut self) -> Result<ScannedBlockInfo, Error>;
+	fn last_scanned_block(&mut self) -> Result<ScannedBlockInfo, Error>;
 
 	/// Flag whether the wallet needs a full UTXO scan on next update attempt
-	fn init_status<'a>(&mut self) -> Result<WalletInitStatus, Error>;
+	fn init_status(&mut self) -> Result<WalletInitStatus, Error>;
 }
 
 /// Batch trait to update the output data backend atomically. Trying to use a
@@ -300,7 +304,7 @@ where
 	fn save_last_scanned_block(&mut self, block: ScannedBlockInfo) -> Result<(), Error>;
 
 	/// Save flag indicating whether wallet needs a full UTXO scan
-	fn save_init_status<'a>(&mut self, value: WalletInitStatus) -> Result<(), Error>;
+	fn save_init_status(&mut self, value: WalletInitStatus) -> Result<(), Error>;
 
 	/// get next tx log entry for the parent
 	fn next_tx_log_id(&mut self, parent_key_id: &Identifier) -> Result<u32, Error>;
@@ -368,7 +372,7 @@ pub trait NodeClient: Send + Sync + Clone {
 	fn set_node_api_secret(&mut self, node_api_secret: Option<String>);
 
 	/// Posts a transaction to a grin node
-	fn post_tx(&self, tx: &TxWrapper, fluff: bool) -> Result<(), Error>;
+	fn post_tx(&self, tx: &Transaction, fluff: bool) -> Result<(), Error>;
 
 	/// Returns the api version string and block header version as reported
 	/// by the node. Result can be cached for later use
@@ -385,6 +389,15 @@ pub trait NodeClient: Send + Sync + Clone {
 		min_height: Option<u64>,
 		max_height: Option<u64>,
 	) -> Result<Option<(TxKernel, u64, u64)>, Error>;
+
+	/// Get a token kernel and the height of the block it's included in. Returns
+	/// (tx_token_kernel, height, mmr_index)
+	fn get_token_kernel(
+		&mut self,
+		excess: &pedersen::Commitment,
+		min_height: Option<u64>,
+		max_height: Option<u64>,
+	) -> Result<Option<(TokenTxKernel, u64, u64)>, Error>;
 
 	/// retrieve a list of outputs from the specified grin node
 	/// need "by_height" and "by_id" variants
@@ -551,36 +564,40 @@ impl OutputData {
 	/// Check if output is eligible to spend based on state and height and
 	/// confirmations
 	pub fn eligible_to_spend(&self, current_height: u64, minimum_confirmations: u64) -> bool {
-		if [OutputStatus::Spent, OutputStatus::Locked].contains(&self.status) {
-			return false;
-		} else if self.status == OutputStatus::Unconfirmed && self.is_coinbase {
-			return false;
-		} else if self.lock_height > current_height {
-			return false;
-		} else if self.status == OutputStatus::Unspent
-			&& self.num_confirmations(current_height) >= minimum_confirmations
+		if [OutputStatus::Spent, OutputStatus::Locked].contains(&self.status)
+			|| self.status == OutputStatus::Unconfirmed && self.is_coinbase
+			|| self.lock_height > current_height
 		{
-			return true;
-		} else if self.status == OutputStatus::Unconfirmed && minimum_confirmations == 0 {
-			return true;
+			false
 		} else {
-			return false;
+			(self.status == OutputStatus::Unspent
+				&& self.num_confirmations(current_height) >= minimum_confirmations)
+				|| self.status == OutputStatus::Unconfirmed && minimum_confirmations == 0
 		}
 	}
 
 	/// Marks this output as unspent if it was previously unconfirmed
 	pub fn mark_unspent(&mut self) {
 		match self.status {
-			OutputStatus::Unconfirmed => self.status = OutputStatus::Unspent,
-			_ => (),
+			OutputStatus::Unconfirmed | OutputStatus::Reverted => {
+				self.status = OutputStatus::Unspent
+			}
+			_ => {}
 		}
 	}
 
 	/// Mark an output as spent
 	pub fn mark_spent(&mut self) {
 		match self.status {
-			OutputStatus::Unspent => self.status = OutputStatus::Spent,
-			OutputStatus::Locked => self.status = OutputStatus::Spent,
+			OutputStatus::Unspent | OutputStatus::Locked => self.status = OutputStatus::Spent,
+			_ => (),
+		}
+	}
+
+	/// Mark an output as reverted
+	pub fn mark_reverted(&mut self) {
+		match self.status {
+			OutputStatus::Unspent => self.status = OutputStatus::Reverted,
 			_ => (),
 		}
 	}
@@ -689,8 +706,15 @@ impl TokenOutputData {
 	/// Mark an output as spent
 	pub fn mark_spent(&mut self) {
 		match self.status {
-			OutputStatus::Unspent => self.status = OutputStatus::Spent,
-			OutputStatus::Locked => self.status = OutputStatus::Spent,
+			OutputStatus::Unspent | OutputStatus::Locked => self.status = OutputStatus::Spent,
+			_ => (),
+		}
+	}
+
+	/// Mark an output as reverted
+	pub fn mark_reverted(&mut self) {
+		match self.status {
+			OutputStatus::Unspent => self.status = OutputStatus::Reverted,
 			_ => (),
 		}
 	}
@@ -710,6 +734,8 @@ pub enum OutputStatus {
 	Locked,
 	/// Spent
 	Spent,
+	/// Reverted
+	Reverted,
 }
 
 impl fmt::Display for OutputStatus {
@@ -719,6 +745,7 @@ impl fmt::Display for OutputStatus {
 			OutputStatus::Unspent => write!(f, "Unspent"),
 			OutputStatus::Locked => write!(f, "Locked"),
 			OutputStatus::Spent => write!(f, "Spent"),
+			OutputStatus::Reverted => write!(f, "Reverted"),
 		}
 	}
 }
@@ -751,6 +778,8 @@ pub struct Context {
 	pub fee: u64,
 	/// keep track of the participant id
 	pub participant_id: usize,
+	/// Payment proof sender address derivation path, if needed
+	pub payment_proof_derivation_index: Option<u32>,
 }
 
 impl Context {
@@ -777,7 +806,8 @@ impl Context {
 			token_output_ids: vec![],
 			token_input_ids: vec![],
 			fee: 0,
-			participant_id,
+			participant_id: participant_id,
+			payment_proof_derivation_index: None,
 		}
 	}
 }
@@ -787,7 +817,7 @@ impl Context {
 	/// be kept between invocations
 	pub fn add_output(&mut self, output_id: &Identifier, mmr_index: &Option<u64>, amount: u64) {
 		self.output_ids
-			.push((output_id.clone(), mmr_index.clone(), amount));
+			.push((output_id.clone(), *mmr_index, amount));
 	}
 
 	/// Returns all stored outputs
@@ -798,8 +828,7 @@ impl Context {
 	/// Tracks IDs of my inputs into the transaction
 	/// be kept between invocations
 	pub fn add_input(&mut self, input_id: &Identifier, mmr_index: &Option<u64>, amount: u64) {
-		self.input_ids
-			.push((input_id.clone(), mmr_index.clone(), amount));
+		self.input_ids.push((input_id.clone(), *mmr_index, amount));
 	}
 
 	/// Returns all stored input identifiers
@@ -816,7 +845,7 @@ impl Context {
 		amount: u64,
 	) {
 		self.token_output_ids
-			.push((output_id.clone(), mmr_index.clone(), amount));
+			.push((output_id.clone(), *mmr_index, amount));
 	}
 
 	/// Returns all stored outputs
@@ -828,7 +857,7 @@ impl Context {
 	/// be kept between invocations
 	pub fn add_token_input(&mut self, input_id: &Identifier, mmr_index: &Option<u64>, amount: u64) {
 		self.token_input_ids
-			.push((input_id.clone(), mmr_index.clone(), amount));
+			.push((input_id.clone(), *mmr_index, amount));
 	}
 
 	/// Returns all stored input identifiers
@@ -945,6 +974,9 @@ pub struct WalletInfo {
 	/// amount locked via previous transactions
 	#[serde(with = "secp_ser::string_or_u64")]
 	pub amount_locked: u64,
+	/// amount previously confirmed, now reverted
+	#[serde(with = "secp_ser::string_or_u64")]
+	pub amount_reverted: u64,
 	/// token info
 	pub token_infos: Vec<WalletTokenInfo>,
 }
@@ -967,6 +999,9 @@ pub struct WalletTokenInfo {
 	/// amount locked via previous transactions
 	#[serde(with = "secp_ser::string_or_u64")]
 	pub amount_locked: u64,
+	/// amount previously confirmed, now reverted
+	#[serde(with = "secp_ser::string_or_u64")]
+	pub amount_reverted: u64,
 }
 
 /// Types of transactions that can be contained within a TXLog entry
@@ -982,6 +1017,8 @@ pub enum TxLogEntryType {
 	TxReceivedCancelled,
 	/// Sent transaction that was rolled back by user
 	TxSentCancelled,
+	/// Received transaction that was reverted on-chain
+	TxReverted,
 }
 
 impl fmt::Display for TxLogEntryType {
@@ -992,6 +1029,7 @@ impl fmt::Display for TxLogEntryType {
 			TxLogEntryType::TxSent => write!(f, "Sent Tx"),
 			TxLogEntryType::TxReceivedCancelled => write!(f, "Received Tx\n- Cancelled"),
 			TxLogEntryType::TxSentCancelled => write!(f, "Sent Tx\n- Cancelled"),
+			TxLogEntryType::TxReverted => write!(f, "Received Tx\n- Reverted"),
 		}
 	}
 }
@@ -1032,6 +1070,10 @@ pub struct TxLogEntry {
 	/// Fee
 	#[serde(with = "secp_ser::opt_string_or_u64")]
 	pub fee: Option<u64>,
+	/// Cutoff block height
+	#[serde(with = "secp_ser::opt_string_or_u64")]
+	#[serde(default)]
+	pub ttl_cutoff_height: Option<u64>,
 	/// Message data, stored as json
 	pub messages: Option<ParticipantMessages>,
 	/// Location of the store transaction, (reference or resending)
@@ -1044,6 +1086,12 @@ pub struct TxLogEntry {
 	/// of kernel is necessary
 	#[serde(default)]
 	pub kernel_lookup_min_height: Option<u64>,
+	/// Additional info needed to stored payment proof
+	#[serde(default)]
+	pub payment_proof: Option<StoredProofInfo>,
+	/// Track the time it took for a transaction to get reverted
+	#[serde(with = "option_duration_as_secs", default)]
+	pub reverted_after: Option<Duration>,
 }
 
 impl ser::Writeable for TxLogEntry {
@@ -1075,15 +1123,18 @@ impl TxLogEntry {
 			num_inputs: 0,
 			num_outputs: 0,
 			fee: None,
+			ttl_cutoff_height: None,
 			messages: None,
 			stored_tx: None,
 			kernel_excess: None,
 			kernel_lookup_min_height: None,
+			payment_proof: None,
+			reverted_after: None,
 		}
 	}
 
 	/// Given a vec of TX log entries, return credited + debited sums
-	pub fn sum_confirmed(txs: &Vec<TxLogEntry>) -> (u64, u64) {
+	pub fn sum_confirmed(txs: &[TxLogEntry]) -> (u64, u64) {
 		txs.iter().fold((0, 0), |acc, tx| match tx.confirmed {
 			true => (acc.0 + tx.amount_credited, acc.1 + tx.amount_debited),
 			false => acc,
@@ -1109,6 +1160,8 @@ pub enum TokenTxLogEntryType {
 	TokenTxReceivedCancelled,
 	/// Sent token transaction that was rolled back by user
 	TokenTxSentCancelled,
+	/// Received token transaction that was reverted on-chain
+	TokenTxReverted,
 }
 
 impl fmt::Display for TokenTxLogEntryType {
@@ -1121,6 +1174,7 @@ impl fmt::Display for TokenTxLogEntryType {
 				write!(f, "Received Token Tx\n- Cancelled")
 			}
 			TokenTxLogEntryType::TokenTxSentCancelled => write!(f, "Sent Token Tx\n- Cancelled"),
+			TokenTxLogEntryType::TokenTxReverted => write!(f, "Received Token Tx\n- Reverted"),
 		}
 	}
 }
@@ -1173,6 +1227,10 @@ pub struct TokenTxLogEntry {
 	/// Fee
 	#[serde(with = "secp_ser::opt_string_or_u64")]
 	pub fee: Option<u64>,
+	/// Cutoff block height
+	#[serde(with = "secp_ser::opt_string_or_u64")]
+	#[serde(default)]
+	pub ttl_cutoff_height: Option<u64>,
 	/// Message data, stored as json
 	pub messages: Option<ParticipantMessages>,
 	/// Location of the store transaction, (reference or resending)
@@ -1185,6 +1243,12 @@ pub struct TokenTxLogEntry {
 	/// of kernel is necessary
 	#[serde(default)]
 	pub kernel_lookup_min_height: Option<u64>,
+	/// Additional info needed to stored payment proof
+	#[serde(default)]
+	pub payment_proof: Option<StoredProofInfo>,
+	/// Track the time it took for a transaction to get reverted
+	#[serde(with = "option_duration_as_secs", default)]
+	pub reverted_after: Option<Duration>,
 }
 
 impl ser::Writeable for TokenTxLogEntry {
@@ -1221,15 +1285,18 @@ impl TokenTxLogEntry {
 			token_amount_credited: 0,
 			token_amount_debited: 0,
 			fee: None,
+			ttl_cutoff_height: None,
 			messages: None,
 			stored_tx: None,
 			kernel_excess: None,
 			kernel_lookup_min_height: None,
+			payment_proof: None,
+			reverted_after: None,
 		}
 	}
 
-	/// Given a vec of TX log entries, return credited + debited sums
-	pub fn sum_confirmed(txs: &Vec<TxLogEntry>) -> (u64, u64) {
+	/// Given a vec of token TX log entries, return credited + debited sums
+	pub fn sum_confirmed(txs: &[TokenTxLogEntry]) -> (u64, u64) {
 		txs.iter().fold((0, 0), |acc, tx| match tx.confirmed {
 			true => (acc.0 + tx.amount_credited, acc.1 + tx.amount_debited),
 			false => acc,
@@ -1239,6 +1306,39 @@ impl TokenTxLogEntry {
 	/// Update confirmation TS with now
 	pub fn update_confirmation_ts(&mut self) {
 		self.confirmation_ts = Some(Utc::now());
+	}
+}
+
+/// Payment proof information. Differs from what is sent via
+/// the slate
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct StoredProofInfo {
+	/// receiver address
+	#[serde(with = "dalek_ser::dalek_pubkey_serde")]
+	pub receiver_address: DalekPublicKey,
+	#[serde(with = "dalek_ser::option_dalek_sig_serde")]
+	/// receiver signature
+	pub receiver_signature: Option<DalekSignature>,
+	/// sender address derivation path index
+	pub sender_address_path: u32,
+	/// sender address
+	#[serde(with = "dalek_ser::dalek_pubkey_serde")]
+	pub sender_address: DalekPublicKey,
+	/// sender signature
+	#[serde(with = "dalek_ser::option_dalek_sig_serde")]
+	pub sender_signature: Option<DalekSignature>,
+}
+
+impl ser::Writeable for StoredProofInfo {
+	fn write<W: ser::Writer>(&self, writer: &mut W) -> Result<(), ser::Error> {
+		writer.write_bytes(&serde_json::to_vec(self).map_err(|_| ser::Error::CorruptedData)?)
+	}
+}
+
+impl ser::Readable for StoredProofInfo {
+	fn read(reader: &mut dyn ser::Reader) -> Result<StoredProofInfo, ser::Error> {
+		let data = reader.read_bytes_len_prefix()?;
+		serde_json::from_slice(&data[..]).map_err(|_| ser::Error::CorruptedData)
 	}
 }
 
@@ -1331,5 +1431,85 @@ impl ser::Readable for WalletInitStatus {
 	fn read(reader: &mut dyn ser::Reader) -> Result<WalletInitStatus, ser::Error> {
 		let data = reader.read_bytes_len_prefix()?;
 		serde_json::from_slice(&data[..]).map_err(|_| ser::Error::CorruptedData)
+	}
+}
+
+/// Serializes an Option<Duration> to and from a string
+pub mod option_duration_as_secs {
+	use serde::de::Error;
+	use serde::{Deserialize, Deserializer, Serializer};
+	use std::time::Duration;
+
+	///
+	pub fn serialize<S>(dur: &Option<Duration>, serializer: S) -> Result<S::Ok, S::Error>
+	where
+		S: Serializer,
+	{
+		match dur {
+			Some(dur) => serializer.serialize_str(&format!("{}", dur.as_secs())),
+			None => serializer.serialize_none(),
+		}
+	}
+
+	///
+	pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+	where
+		D: Deserializer<'de>,
+	{
+		match Option::<String>::deserialize(deserializer)? {
+			Some(s) => {
+				let secs = s
+					.parse::<u64>()
+					.map_err(|err| Error::custom(err.to_string()))?;
+				Ok(Some(Duration::from_secs(secs)))
+			}
+			None => Ok(None),
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use serde_json::Value;
+
+	#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+	struct TestSer {
+		#[serde(with = "option_duration_as_secs", default)]
+		dur: Option<Duration>,
+	}
+
+	#[test]
+	fn duration_serde() {
+		let some = TestSer {
+			dur: Some(Duration::from_secs(100)),
+		};
+		let val = serde_json::to_value(some.clone()).unwrap();
+		if let Value::Object(o) = &val {
+			if let Value::String(s) = o.get("dur").unwrap() {
+				assert_eq!(s, "100");
+			} else {
+				panic!("Invalid type");
+			}
+		} else {
+			panic!("Invalid type")
+		}
+		assert_eq!(some, serde_json::from_value(val).unwrap());
+
+		let none = TestSer { dur: None };
+		let val = serde_json::to_value(none.clone()).unwrap();
+		if let Value::Object(o) = &val {
+			if let Value::Null = o.get("dur").unwrap() {
+				// ok
+			} else {
+				panic!("Invalid type");
+			}
+		} else {
+			panic!("Invalid type")
+		}
+		assert_eq!(none, serde_json::from_value(val).unwrap());
+
+		let none2 = serde_json::from_str::<TestSer>("{}").unwrap();
+		assert_eq!(none, none2);
 	}
 }

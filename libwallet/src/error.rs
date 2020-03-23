@@ -19,6 +19,7 @@ use crate::grin_core::libtx;
 use crate::grin_keychain;
 use crate::grin_store;
 use crate::grin_util::secp;
+use crate::util;
 use failure::{Backtrace, Context, Fail};
 use std::env;
 use std::fmt::{self, Display};
@@ -72,6 +73,10 @@ pub enum ErrorKind {
 	/// Secp Error
 	#[fail(display = "Secp error")]
 	Secp(secp::Error),
+
+	/// Onion V3 Address Error
+	#[fail(display = "Onion V3 Address Error")]
+	OnionV3Address(util::OnionV3AddressError),
 
 	/// Callback implementation error conversion
 	#[fail(display = "Trait Implementation error")]
@@ -201,6 +206,14 @@ pub enum ErrorKind {
 	#[fail(display = "Unknown Slate Version: {}", _0)]
 	SlateVersion(u16),
 
+	/// Attempt to use slate transaction data that doesn't exists
+	#[fail(display = "Slate transaction required in this context")]
+	SlateTransactionRequired,
+
+	/// Attempt to downgrade slate that can't be downgraded
+	#[fail(display = "Can't downgrade slate: {}", _0)]
+	SlateInvalidDowngrade(String),
+
 	/// Compatibility error between incoming slate versions and what's expected
 	#[fail(display = "Compatibility Error: {}", _0)]
 	Compatibility(String),
@@ -225,6 +238,30 @@ pub enum ErrorKind {
 	#[fail(display = "Tor Config Error: {}", _0)]
 	TorConfig(String),
 
+	/// Generating ED25519 Public Key
+	#[fail(display = "Error generating ed25519 secret key: {}", _0)]
+	ED25519Key(String),
+
+	/// Generating Payment Proof
+	#[fail(display = "Payment Proof generation error: {}", _0)]
+	PaymentProof(String),
+
+	/// Retrieving Payment Proof
+	#[fail(display = "Payment Proof retrieval error: {}", _0)]
+	PaymentProofRetrieval(String),
+
+	/// Retrieving Payment Proof
+	#[fail(display = "Payment Proof parsing error: {}", _0)]
+	PaymentProofParsing(String),
+
+	/// Decoding OnionV3 addresses to payment proof addresses
+	#[fail(display = "Proof Address decoding: {}", _0)]
+	AddressDecoding(String),
+
+	/// Transaction has expired it's TTL
+	#[fail(display = "Transaction Expired")]
+	TransactionExpired,
+
 	/// Unreach Token Support Height
 	#[fail(display = "Can't deal token transaction util reach token support height")]
 	UnreachTokenSupportHeight,
@@ -237,13 +274,7 @@ pub enum ErrorKind {
 impl Display for Error {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		let show_bt = match env::var("RUST_BACKTRACE") {
-			Ok(r) => {
-				if r == "1" {
-					true
-				} else {
-					false
-				}
-			}
+			Ok(r) => r == "1",
 			Err(_) => false,
 		};
 		let backtrace = match self.backtrace() {
@@ -252,7 +283,7 @@ impl Display for Error {
 		};
 		let inner_output = format!("{}", self.inner,);
 		let backtrace_output = format!("\n Backtrace: {}", backtrace);
-		let mut output = inner_output.clone();
+		let mut output = inner_output;
 		if show_bt {
 			output.push_str(&backtrace_output);
 		}
@@ -269,7 +300,7 @@ impl Error {
 	pub fn cause_string(&self) -> String {
 		match self.cause() {
 			Some(k) => format!("{}", k),
-			None => format!("Unknown"),
+			None => "Unknown".to_string(),
 		}
 	}
 	/// get cause
@@ -355,5 +386,11 @@ impl From<committed::Error> for Error {
 impl From<grin_store::Error> for Error {
 	fn from(error: grin_store::Error) -> Error {
 		Error::from(ErrorKind::Backend(format!("{}", error)))
+	}
+}
+
+impl From<util::OnionV3AddressError> for Error {
+	fn from(error: util::OnionV3AddressError) -> Error {
+		Error::from(ErrorKind::OnionV3Address(error))
 	}
 }

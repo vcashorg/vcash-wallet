@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::{env, fs};
 use util::{Mutex, ZeroingString};
 
-use grin_wallet_api::{EncryptedRequest, EncryptedResponse};
+use grin_wallet_api::{EncryptedRequest, EncryptedResponse, JsonId};
 use grin_wallet_config::{GlobalWalletConfig, WalletConfig, GRIN_WALLET_DIR};
 use grin_wallet_impls::{DefaultLCProvider, DefaultWalletImpl};
 use grin_wallet_libwallet::{NodeClient, WalletInfo, WalletInst};
@@ -308,7 +308,7 @@ where
 {
 	let args = app.clone().get_matches_from(arg_vec);
 	let _ = get_wallet_subcommand(test_dir, wallet_name, args.clone());
-	let config = config::initial_setup_wallet(&ChainTypes::AutomatedTesting, None).unwrap();
+	let config = config::initial_setup_wallet(&ChainTypes::AutomatedTesting, None, true).unwrap();
 	let mut wallet_config = config.clone().members.unwrap().wallet;
 	wallet_config.chain_type = None;
 	wallet_config.api_secret_path = None;
@@ -371,7 +371,7 @@ where
 
 #[allow(dead_code)]
 pub fn send_request_enc<OUT>(
-	sec_req_id: u32,
+	sec_req_id: &JsonId,
 	internal_request_id: u32,
 	dest: &str,
 	req: &str,
@@ -444,7 +444,7 @@ where
 
 #[allow(dead_code)]
 pub fn derive_ecdh_key(sec_key_str: &str, other_pubkey: &PublicKey) -> SecretKey {
-	let sec_key_bytes = from_hex(sec_key_str.to_owned()).unwrap();
+	let sec_key_bytes = from_hex(sec_key_str).unwrap();
 	let sec_key = {
 		let secp_inst = static_secp_instance();
 		let secp = secp_inst.lock();

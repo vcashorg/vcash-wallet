@@ -842,7 +842,7 @@ where
 				&& t.tx_type == TokenTxLogEntryType::TokenTxReceived
 		})
 		.filter_map(|t| {
-			t.kernel_excess
+			t.token_kernel_excess
 				.map(|e| (t.id, e, t.kernel_lookup_min_height))
 		});
 

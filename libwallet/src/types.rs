@@ -1239,6 +1239,10 @@ pub struct TokenTxLogEntry {
 	#[serde(with = "secp_ser::option_commitment_serde")]
 	#[serde(default)]
 	pub kernel_excess: Option<pedersen::Commitment>,
+	/// Associated token kernel excess, for later lookup if necessary
+	#[serde(with = "secp_ser::option_commitment_serde")]
+	#[serde(default)]
+	pub token_kernel_excess: Option<pedersen::Commitment>,
 	/// Height reported when transaction was created, if lookup
 	/// of kernel is necessary
 	#[serde(default)]
@@ -1289,6 +1293,7 @@ impl TokenTxLogEntry {
 			messages: None,
 			stored_tx: None,
 			kernel_excess: None,
+			token_kernel_excess: None,
 			kernel_lookup_min_height: None,
 			payment_proof: None,
 			reverted_after: None,

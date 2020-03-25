@@ -349,68 +349,133 @@ where
 		wallet_inst.clone(),
 		keychain_mask,
 		status_send_channel,
-		refresh_from_node,
+		false,
 		tx_id,
 		tx_slate_id,
 	)?;
-	if txs.1.len() != 1 {
+	let token_txs = retrieve_token_txs(
+		wallet_inst.clone(),
+		keychain_mask,
+		status_send_channel,
+		false,
+		tx_id,
+		tx_slate_id,
+	)?;
+	if txs.1.len() != 1 && token_txs.1.len() != 1 {
 		return Err(ErrorKind::PaymentProofRetrieval("Transaction doesn't exist".into()).into());
 	}
-	// Pull out all needed fields, returning an error if they're not present
-	let tx = txs.1[0].clone();
-	let proof = match tx.payment_proof {
-		Some(p) => p,
-		None => {
-			return Err(ErrorKind::PaymentProofRetrieval(
-				"Transaction does not contain a payment proof".into(),
-			)
-			.into());
-		}
-	};
-	let amount = if tx.amount_credited >= tx.amount_debited {
-		tx.amount_credited - tx.amount_debited
-	} else {
-		let fee = match tx.fee {
-			Some(f) => f,
-			None => 0,
+
+	if txs.1.len() == 1 {
+		// Pull out all needed fields, returning an error if they're not present
+		let tx = txs.1[0].clone();
+		let proof = match tx.payment_proof {
+			Some(p) => p,
+			None => {
+				return Err(ErrorKind::PaymentProofRetrieval(
+					"Transaction does not contain a payment proof".into(),
+				)
+				.into());
+			}
 		};
-		tx.amount_debited - tx.amount_credited - fee
-	};
-	let excess = match tx.kernel_excess {
-		Some(e) => e,
-		None => {
-			return Err(ErrorKind::PaymentProofRetrieval(
-				"Transaction does not contain kernel excess".into(),
-			)
-			.into());
-		}
-	};
-	let r_sig = match proof.receiver_signature {
-		Some(e) => e,
-		None => {
-			return Err(ErrorKind::PaymentProofRetrieval(
-				"Proof does not contain receiver signature ".into(),
-			)
-			.into());
-		}
-	};
-	let s_sig = match proof.sender_signature {
-		Some(e) => e,
-		None => {
-			return Err(ErrorKind::PaymentProofRetrieval(
-				"Proof does not contain sender signature ".into(),
-			)
-			.into());
-		}
-	};
-	Ok(PaymentProof {
-		amount: amount,
-		excess: excess,
-		recipient_address: OnionV3Address::from_bytes(proof.receiver_address.to_bytes()),
-		recipient_sig: r_sig,
-		sender_address: OnionV3Address::from_bytes(proof.sender_address.to_bytes()),
-		sender_sig: s_sig,
-	})
+		let amount = if tx.amount_credited >= tx.amount_debited {
+			tx.amount_credited - tx.amount_debited
+		} else {
+			let fee = match tx.fee {
+				Some(f) => f,
+				None => 0,
+			};
+			tx.amount_debited - tx.amount_credited - fee
+		};
+		let excess = match tx.kernel_excess {
+			Some(e) => e,
+			None => {
+				return Err(ErrorKind::PaymentProofRetrieval(
+					"Transaction does not contain kernel excess".into(),
+				)
+				.into());
+			}
+		};
+		let r_sig = match proof.receiver_signature {
+			Some(e) => e,
+			None => {
+				return Err(ErrorKind::PaymentProofRetrieval(
+					"Proof does not contain receiver signature ".into(),
+				)
+				.into());
+			}
+		};
+		let s_sig = match proof.sender_signature {
+			Some(e) => e,
+			None => {
+				return Err(ErrorKind::PaymentProofRetrieval(
+					"Proof does not contain sender signature ".into(),
+				)
+				.into());
+			}
+		};
+		Ok(PaymentProof {
+			token_type: None,
+			amount: amount,
+			excess: excess,
+			recipient_address: OnionV3Address::from_bytes(proof.receiver_address.to_bytes()),
+			recipient_sig: r_sig,
+			sender_address: OnionV3Address::from_bytes(proof.sender_address.to_bytes()),
+			sender_sig: s_sig,
+		})
+	} else {
+		// Pull out all needed fields, returning an error if they're not present
+		let tx = token_txs.1[0].clone();
+		let proof = match tx.payment_proof {
+			Some(p) => p,
+			None => {
+				return Err(ErrorKind::PaymentProofRetrieval(
+					"Transaction does not contain a payment proof".into(),
+				)
+				.into());
+			}
+		};
+		let amount = if tx.token_amount_credited >= tx.token_amount_debited {
+			tx.token_amount_credited - tx.token_amount_debited
+		} else {
+			tx.token_amount_debited - tx.token_amount_credited
+		};
+		let excess = match tx.token_kernel_excess {
+			Some(e) => e,
+			None => {
+				return Err(ErrorKind::PaymentProofRetrieval(
+					"Transaction does not contain token kernel excess".into(),
+				)
+				.into());
+			}
+		};
+		let r_sig = match proof.receiver_signature {
+			Some(e) => e,
+			None => {
+				return Err(ErrorKind::PaymentProofRetrieval(
+					"Proof does not contain receiver signature ".into(),
+				)
+				.into());
+			}
+		};
+		let s_sig = match proof.sender_signature {
+			Some(e) => e,
+			None => {
+				return Err(ErrorKind::PaymentProofRetrieval(
+					"Proof does not contain sender signature ".into(),
+				)
+				.into());
+			}
+		};
+		Ok(PaymentProof {
+			token_type: Some(tx.token_type),
+			amount: amount,
+			excess: excess,
+			recipient_address: OnionV3Address::from_bytes(proof.receiver_address.to_bytes()),
+			recipient_sig: r_sig,
+			sender_address: OnionV3Address::from_bytes(proof.sender_address.to_bytes()),
+			sender_sig: s_sig,
+		})
+	}
 }
 
 /// Initiate tx as sender
@@ -1074,7 +1139,12 @@ where
 	K: Keychain + 'a,
 {
 	let sender_pubkey = proof.sender_address.to_ed25519()?;
-	let msg = tx::payment_proof_message(proof.amount, &proof.excess, sender_pubkey)?;
+	let msg = tx::payment_proof_message(
+		proof.token_type.clone(),
+		proof.amount,
+		&proof.excess,
+		sender_pubkey,
+	)?;
 
 	let (mut client, parent_key_id, keychain) = {
 		wallet_lock!(wallet_inst, w);
@@ -1086,23 +1156,43 @@ where
 	};
 
 	// Check kernel exists
-	match client.get_kernel(&proof.excess, None, None) {
-		Err(e) => {
-			return Err(ErrorKind::PaymentProof(format!(
-				"Error retrieving kernel from chain: {}",
-				e
-			))
-			.into());
-		}
-		Ok(None) => {
-			return Err(ErrorKind::PaymentProof(format!(
-				"Transaction kernel with excess {:?} not found on chain",
-				proof.excess
-			))
-			.into());
-		}
-		Ok(Some(_)) => {}
-	};
+	if proof.token_type.is_some() {
+		match client.get_token_kernel(&proof.excess, None, None) {
+			Err(e) => {
+				return Err(ErrorKind::PaymentProof(format!(
+					"Error retrieving kernel from chain: {}",
+					e
+				))
+				.into());
+			}
+			Ok(None) => {
+				return Err(ErrorKind::PaymentProof(format!(
+					"Transaction token kernel with excess {:?} not found on chain",
+					proof.excess
+				))
+				.into());
+			}
+			Ok(Some(_)) => {}
+		};
+	} else {
+		match client.get_kernel(&proof.excess, None, None) {
+			Err(e) => {
+				return Err(ErrorKind::PaymentProof(format!(
+					"Error retrieving kernel from chain: {}",
+					e
+				))
+				.into());
+			}
+			Ok(None) => {
+				return Err(ErrorKind::PaymentProof(format!(
+					"Transaction kernel with excess {:?} not found on chain",
+					proof.excess
+				))
+				.into());
+			}
+			Ok(Some(_)) => {}
+		};
+	}
 
 	// Check Sigs
 	let recipient_pubkey = proof.recipient_address.to_ed25519()?;
@@ -1243,8 +1333,8 @@ where
 		if tx.amount_debited != 0 && tx.amount_credited != 0 {
 			continue;
 		}
-		if let Some(e) = tx.kernel_excess {
-			let res = client.get_kernel(&e, tx.kernel_lookup_min_height, Some(height));
+		if let Some(e) = tx.token_kernel_excess {
+			let res = client.get_token_kernel(&e, tx.kernel_lookup_min_height, Some(height));
 			let kernel = match res {
 				Ok(k) => k,
 				Err(_) => return Ok(false),

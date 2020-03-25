@@ -810,6 +810,31 @@ impl Slate {
 			.commit_sum(vec![tx_excess], vec![offset_excess])?)
 	}
 
+	/// return the final token excess
+	pub fn calc_token_excess<K>(&self, keychain: &K) -> Result<Commitment, Error>
+	where
+		K: Keychain,
+	{
+		let tx = self.tx_or_err()?.clone();
+
+		let token_type = TokenKey::from_hex(self.token_type.clone().unwrap().as_str())?;
+
+		// build the final excess based on final tx and offset
+		let final_excess = {
+			let mut token_input_commit_map = tx.token_inputs_committed();
+			let mut token_output_commit_map = tx.token_outputs_committed();
+			let token_input_commit_vec = token_input_commit_map.entry(token_type).or_insert(vec![]);
+			let token_output_commit_vec =
+				token_output_commit_map.entry(token_type).or_insert(vec![]);
+			keychain.secp().commit_sum(
+				token_output_commit_vec.clone(),
+				token_input_commit_vec.clone(),
+			)?
+		};
+
+		Ok(final_excess)
+	}
+
 	/// builds a final transaction after the aggregated sig exchange
 	fn finalize_transaction<K>(
 		&mut self,
@@ -908,22 +933,9 @@ impl Slate {
 	{
 		self.check_fees()?;
 
-		let token_type = TokenKey::from_hex(self.token_type.clone().unwrap().as_str())?;
+		let final_excess = self.calc_token_excess(keychain)?;
 
 		let final_tx = self.tx_or_err_mut()?;
-
-		// build the final excess based on final tx and offset
-		let final_excess = {
-			let mut token_input_commit_map = final_tx.token_inputs_committed();
-			let mut token_output_commit_map = final_tx.token_outputs_committed();
-			let token_input_commit_vec = token_input_commit_map.entry(token_type).or_insert(vec![]);
-			let token_output_commit_vec =
-				token_output_commit_map.entry(token_type).or_insert(vec![]);
-			keychain.secp().commit_sum(
-				token_output_commit_vec.clone(),
-				token_input_commit_vec.clone(),
-			)?
-		};
 
 		// update the tx kernel to reflect the offset excess and sig
 		assert_eq!(final_tx.token_kernels().len(), 1);

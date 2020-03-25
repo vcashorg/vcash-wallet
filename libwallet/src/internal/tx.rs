@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::grin_core::consensus::valid_header_version;
 use crate::grin_core::core::HeaderVersion;
 use crate::grin_keychain::{Identifier, Keychain};
+use crate::grin_util::from_hex;
 use crate::grin_util::secp::key::SecretKey;
 use crate::grin_util::secp::pedersen;
 use crate::grin_util::Mutex;
@@ -468,6 +469,7 @@ where
 		wallet.store_tx(&format!("{}", tx.tx_slate_id.unwrap()), slate.tx_or_err()?)?;
 		let parent_key = tx.parent_key_id.clone();
 		tx.kernel_excess = Some(slate.tx_or_err()?.body.kernels[0].excess);
+		tx.token_kernel_excess = Some(slate.tx_or_err()?.body.token_kernels[0].excess);
 
 		if let Some(ref p) = slate.clone().payment_proof {
 			let derivation_index = match context.payment_proof_derivation_index {
@@ -476,11 +478,12 @@ where
 			};
 			let keychain = wallet.keychain(keychain_mask)?;
 			let parent_key_id = wallet.parent_key_id();
-			let excess = slate.calc_excess(&keychain)?;
+			let excess = slate.calc_token_excess(&keychain)?;
 			let sender_key =
 				address::address_from_derivation_path(&keychain, &parent_key_id, derivation_index)?;
 			let sender_address = OnionV3Address::from_private(&sender_key.0)?;
 			let sig = create_payment_proof_signature(
+				slate.token_type.clone(),
 				slate.amount,
 				&excess,
 				p.sender_address,
@@ -520,6 +523,34 @@ where
 		wallet.store_tx(&format!("{}", tx.tx_slate_id.unwrap()), slate.tx_or_err()?)?;
 		let parent_key = tx.parent_key_id.clone();
 		tx.kernel_excess = Some(slate.tx_or_err()?.body.kernels[0].excess);
+
+		if let Some(ref p) = slate.clone().payment_proof {
+			let derivation_index = match context.payment_proof_derivation_index {
+				Some(i) => i,
+				None => 0,
+			};
+			let keychain = wallet.keychain(keychain_mask)?;
+			let parent_key_id = wallet.parent_key_id();
+			let excess = slate.calc_excess(&keychain)?;
+			let sender_key =
+				address::address_from_derivation_path(&keychain, &parent_key_id, derivation_index)?;
+			let sender_address = OnionV3Address::from_private(&sender_key.0)?;
+			let sig = create_payment_proof_signature(
+				slate.token_type.clone(),
+				slate.amount,
+				&excess,
+				p.sender_address,
+				sender_key,
+			)?;
+			tx.payment_proof = Some(StoredProofInfo {
+				receiver_address: p.receiver_address,
+				receiver_signature: p.receiver_signature,
+				sender_address_path: derivation_index,
+				sender_address: sender_address.to_ed25519()?,
+				sender_signature: Some(sig),
+			})
+		}
+
 		let mut batch = wallet.batch(keychain_mask)?;
 		batch.save_tx_log_entry(tx, &parent_key)?;
 		batch.commit()?;
@@ -568,11 +599,17 @@ where
 }
 
 pub fn payment_proof_message(
+	token_type: Option<String>,
 	amount: u64,
 	kernel_commitment: &pedersen::Commitment,
 	sender_address: DalekPublicKey,
 ) -> Result<Vec<u8>, Error> {
 	let mut msg = Vec::new();
+	if token_type.is_some() {
+		let token_type = token_type.unwrap();
+		let mut token_type_vec = from_hex(token_type.as_str()).unwrap();
+		msg.append(&mut token_type_vec);
+	}
 	msg.write_u64::<BigEndian>(amount)?;
 	msg.append(&mut kernel_commitment.0.to_vec());
 	msg.append(&mut sender_address.to_bytes().to_vec());
@@ -602,12 +639,13 @@ pub fn _decode_payment_proof_message(
 
 /// create a payment proof
 pub fn create_payment_proof_signature(
+	token_type: Option<String>,
 	amount: u64,
 	kernel_commitment: &pedersen::Commitment,
 	sender_address: DalekPublicKey,
 	sec_key: SecretKey,
 ) -> Result<DalekSignature, Error> {
-	let msg = payment_proof_message(amount, kernel_commitment, sender_address)?;
+	let msg = payment_proof_message(token_type, amount, kernel_commitment, sender_address)?;
 	let d_skey = match DalekSecretKey::from_bytes(&sec_key.0) {
 		Ok(k) => k,
 		Err(e) => {
@@ -635,15 +673,28 @@ where
 	C: NodeClient + 'a,
 	K: Keychain + 'a,
 {
-	let tx_vec = updater::retrieve_txs(wallet, None, Some(slate.id), Some(parent_key_id), false)?;
-	if tx_vec.is_empty() {
-		return Err(ErrorKind::PaymentProof(
-			"TxLogEntry with original proof info not found (is account correct?)".to_owned(),
-		)
-		.into());
-	}
-
-	let orig_proof_info = tx_vec[0].clone().payment_proof;
+	let orig_proof_info = if slate.token_type.is_none() {
+		let tx_vec =
+			updater::retrieve_txs(wallet, None, Some(slate.id), Some(parent_key_id), false)?;
+		if tx_vec.is_empty() {
+			return Err(ErrorKind::PaymentProof(
+				"TxLogEntry with original proof info not found (is account correct?)".to_owned(),
+			)
+			.into());
+		}
+		tx_vec[0].clone().payment_proof
+	} else {
+		let tx_vec =
+			updater::retrieve_token_txs(wallet, None, Some(slate.id), Some(parent_key_id), false)?;
+		if tx_vec.is_empty() {
+			return Err(ErrorKind::PaymentProof(
+				"TokenTxLogEntry with original proof info not found (is account correct?)"
+					.to_owned(),
+			)
+			.into());
+		}
+		tx_vec[0].clone().payment_proof
+	};
 
 	if orig_proof_info.is_some() && slate.payment_proof.is_none() {
 		return Err(ErrorKind::PaymentProof(
@@ -688,9 +739,17 @@ where
 			)
 			.into());
 		}
+
+		let excess = if slate.token_type.is_some() {
+			slate.calc_token_excess(&keychain)?
+		} else {
+			slate.calc_excess(&keychain)?
+		};
+
 		let msg = payment_proof_message(
+			slate.token_type.clone(),
 			slate.amount,
-			&slate.calc_excess(&keychain)?,
+			&excess,
 			orig_sender_address.to_ed25519()?,
 		)?;
 		let sig = match p.receiver_signature {

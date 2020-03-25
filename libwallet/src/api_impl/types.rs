@@ -259,6 +259,8 @@ pub struct VersionInfo {
 /// Packaged Payment Proof
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PaymentProof {
+	/// Token type
+	pub token_type: Option<String>,
 	/// Amount
 	#[serde(with = "secp_ser::string_or_u64")]
 	pub amount: u64,

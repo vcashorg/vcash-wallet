@@ -479,7 +479,7 @@ pub fn token_txs(
 			Some(_) => "Yes".to_owned(),
 			None => "None".to_owned(),
 		};
-		let kernel_excess = match t.kernel_excess {
+		let kernel_excess = match t.token_kernel_excess {
 			Some(e) => util::to_hex(e.0.to_vec()),
 			None => "None".to_owned(),
 		};
@@ -1060,7 +1060,7 @@ pub fn token_payment_proof(tx: &TokenTxLogEntry) -> Result<(), Error> {
 		Some(s) => util::to_hex(s.to_bytes().to_vec()),
 		None => "None".to_owned(),
 	};
-	let kernel_excess = match tx.kernel_excess {
+	let kernel_excess = match tx.token_kernel_excess {
 		Some(e) => util::to_hex(e.0.to_vec()),
 		None => "None".to_owned(),
 	};

@@ -1422,6 +1422,15 @@ impl From<TransactionV4> for Transaction {
 	}
 }
 
+impl From<&TransactionV4> for Transaction {
+	fn from(tx: &TransactionV4) -> Transaction {
+		let TransactionV4 { offset, body } = tx;
+		let offset = offset.clone();
+		let body = TransactionBody::from(body);
+		Transaction { offset, body }
+	}
+}
+
 impl From<&TransactionBodyV4> for TransactionBody {
 	fn from(body: &TransactionBodyV4) -> TransactionBody {
 		let TransactionBodyV4 {

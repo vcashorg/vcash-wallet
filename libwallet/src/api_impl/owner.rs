@@ -1105,6 +1105,15 @@ where
 			}
 		}
 	}
+	for tx in token_txs {
+		if let Some(e) = tx.ttl_cutoff_height {
+			if tip.0 >= e {
+				wallet_lock!(wallet_inst, w);
+				let parent_key_id = w.parent_key_id();
+				tx::cancel_tx(&mut **w, keychain_mask, &parent_key_id, Some(tx.id), None)?;
+			}
+		}
+	}
 
 	Ok(result)
 }

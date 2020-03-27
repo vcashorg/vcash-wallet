@@ -17,21 +17,12 @@
 //! * Addition of payment_proof (PaymentInfo struct)
 //! * Addition of a u64 ttl_cutoff_height field
 
-use crate::grin_core::core::transaction::OutputFeatures;
-use crate::grin_core::core::transaction::TokenKey;
+use crate::grin_core::core::transaction::{Output, Transaction, TxKernel};
 use crate::grin_core::libtx::secp_ser;
-use crate::grin_keychain::{BlindingFactor, Identifier};
-use crate::grin_util::secp;
+use crate::grin_keychain::Identifier;
 use crate::grin_util::secp::key::PublicKey;
-use crate::grin_util::secp::pedersen::{Commitment, RangeProof};
 use crate::grin_util::secp::Signature;
-use crate::slate::CompatKernelFeatures;
-use crate::slate::CompatTokenKernelFeatures;
-use crate::slate_versions::ser as dalek_ser;
-use crate::slate_versions::v4::{OutputV4, TxKernelV4};
 use crate::types::CbData;
-use ed25519_dalek::PublicKey as DalekPublicKey;
-use ed25519_dalek::Signature as DalekSignature;
 use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -44,7 +35,7 @@ pub struct SlateV3 {
 	pub id: Uuid,
 	/// The core transaction data:
 	/// inputs, outputs, kernels, kernel offset
-	pub tx: TransactionV3,
+	pub tx: Transaction,
 	/// base amount (excluding fee)
 	#[serde(with = "secp_ser::string_or_u64")]
 	pub amount: u64,
@@ -59,22 +50,10 @@ pub struct SlateV3 {
 	/// Lock height
 	#[serde(with = "secp_ser::string_or_u64")]
 	pub lock_height: u64,
-	/// TTL, the block height at which wallets
-	/// should refuse to process the transaction and unlock all
-	/// associated outputs
-	#[serde(with = "secp_ser::opt_string_or_u64")]
-	pub ttl_cutoff_height: Option<u64>,
 	/// Participant data, each participant in the transaction will
 	/// insert their public data here. For now, 0 is sender and 1
 	/// is receiver, though this will change for multi-party
 	pub participant_data: Vec<ParticipantDataV3>,
-	/// Payment Proof
-	#[serde(default = "default_payment_none")]
-	pub payment_proof: Option<PaymentInfoV3>,
-}
-
-fn default_payment_none() -> Option<PaymentInfoV3> {
-	None
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -108,168 +87,13 @@ pub struct ParticipantDataV3 {
 	pub message_sig: Option<Signature>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct PaymentInfoV3 {
-	#[serde(with = "dalek_ser::dalek_pubkey_serde")]
-	pub sender_address: DalekPublicKey,
-	#[serde(with = "dalek_ser::dalek_pubkey_serde")]
-	pub receiver_address: DalekPublicKey,
-	#[serde(with = "dalek_ser::option_dalek_sig_serde")]
-	pub receiver_signature: Option<DalekSignature>,
-}
-
-/// A transaction
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct TransactionV3 {
-	/// The kernel "offset" k2
-	/// excess is k1G after splitting the key k = k1 + k2
-	#[serde(
-		serialize_with = "secp_ser::as_hex",
-		deserialize_with = "secp_ser::blind_from_hex"
-	)]
-	pub offset: BlindingFactor,
-	/// The transaction body - inputs/outputs/kernels
-	pub body: TransactionBodyV3,
-}
-
-/// TransactionBody is a common abstraction for transaction and block
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct TransactionBodyV3 {
-	/// List of inputs spent by the transaction.
-	pub inputs: Vec<InputV3>,
-	/// List of token inputs spent by the transaction.
-	pub token_inputs: Vec<TokenInputV3>,
-	/// List of outputs the transaction produces.
-	pub outputs: Vec<OutputV3>,
-	/// List of token outputs the transaction produces.
-	pub token_outputs: Vec<TokenOutputV3>,
-	/// List of kernels that make up this transaction (usually a single kernel).
-	pub kernels: Vec<TxKernelV3>,
-	/// List of kernels that make up this transaction (usually a single kernel).
-	pub token_kernels: Vec<TokenTxKernelV3>,
-}
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct InputV3 {
-	/// The features of the output being spent.
-	/// We will check maturity for coinbase output.
-	pub features: OutputFeatures,
-	/// The commit referencing the output being spent.
-	#[serde(
-		serialize_with = "secp_ser::as_hex",
-		deserialize_with = "secp_ser::commitment_from_hex"
-	)]
-	pub commit: Commitment,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
-pub struct TokenInputV3 {
-	/// The features of the output being spent.
-	/// We will check maturity for coinbase output.
-	pub features: OutputFeatures,
-	/// Token type
-	pub token_type: TokenKey,
-	/// The commit referencing the output being spent.
-	#[serde(
-		serialize_with = "secp_ser::as_hex",
-		deserialize_with = "secp_ser::commitment_from_hex"
-	)]
-	pub commit: Commitment,
-}
-
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-pub struct OutputV3 {
-	/// Options for an output's structure or use
-	pub features: OutputFeatures,
-	/// The homomorphic commitment representing the output amount
-	#[serde(
-		serialize_with = "secp_ser::as_hex",
-		deserialize_with = "secp_ser::commitment_from_hex"
-	)]
-	pub commit: Commitment,
-	/// A proof that the commitment is in the right range
-	#[serde(
-		serialize_with = "secp_ser::as_hex",
-		deserialize_with = "secp_ser::rangeproof_from_hex"
-	)]
-	pub proof: RangeProof,
-}
-
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-pub struct TokenOutputV3 {
-	/// Options for an output's structure or use
-	pub features: OutputFeatures,
-	/// Token type
-	pub token_type: TokenKey,
-	/// The homomorphic commitment representing the output amount
-	#[serde(
-		serialize_with = "secp_ser::as_hex",
-		deserialize_with = "secp_ser::commitment_from_hex"
-	)]
-	pub commit: Commitment,
-	/// A proof that the commitment is in the right range
-	#[serde(
-		serialize_with = "secp_ser::as_hex",
-		deserialize_with = "secp_ser::rangeproof_from_hex"
-	)]
-	pub proof: RangeProof,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct TxKernelV3 {
-	/// Options for a kernel's structure or use
-	pub features: CompatKernelFeatures,
-	/// Fee originally included in the transaction this proof is for.
-	#[serde(with = "secp_ser::string_or_u64")]
-	pub fee: u64,
-	/// This kernel is not valid earlier than lock_height blocks
-	/// The max lock_height of all *inputs* to this transaction
-	#[serde(with = "secp_ser::string_or_u64")]
-	pub lock_height: u64,
-	/// Remainder of the sum of all transaction commitments. If the transaction
-	/// is well formed, amounts components should sum to zero and the excess
-	/// is hence a valid public key.
-	#[serde(
-		serialize_with = "secp_ser::as_hex",
-		deserialize_with = "secp_ser::commitment_from_hex"
-	)]
-	pub excess: Commitment,
-	/// The signature proving the excess is a valid public key, which signs
-	/// the transaction fee.
-	#[serde(with = "secp_ser::sig_serde")]
-	pub excess_sig: secp::Signature,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct TokenTxKernelV3 {
-	/// Options for a kernel's structure or use
-	pub features: CompatTokenKernelFeatures,
-	/// Token type
-	pub token_type: TokenKey,
-	/// This kernel is not valid earlier than lock_height blocks
-	/// The max lock_height of all *inputs* to this transaction
-	#[serde(with = "secp_ser::string_or_u64")]
-	pub lock_height: u64,
-	/// Remainder of the sum of all transaction commitments. If the transaction
-	/// is well formed, amounts components should sum to zero and the excess
-	/// is hence a valid public key.
-	#[serde(
-		serialize_with = "secp_ser::as_hex",
-		deserialize_with = "secp_ser::commitment_from_hex"
-	)]
-	pub excess: Commitment,
-	/// The signature proving the excess is a valid public key, which signs
-	/// the transaction fee.
-	#[serde(with = "secp_ser::sig_serde")]
-	pub excess_sig: secp::Signature,
-}
-
 /// A mining node requests new coinbase via the foreign api every time a new candidate block is built.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CoinbaseV3 {
 	/// Output
-	pub output: OutputV3,
+	pub output: Output,
 	/// Kernel
-	pub kernel: TxKernelV3,
+	pub kernel: TxKernel,
 	/// Key Id
 	pub key_id: Option<Identifier>,
 }
@@ -277,13 +101,9 @@ pub struct CoinbaseV3 {
 // Coinbase data to versioned.
 impl From<CbData> for CoinbaseV3 {
 	fn from(cb: CbData) -> CoinbaseV3 {
-		let output = OutputV4::from(&cb.output);
-		let output = OutputV3::from(&output);
-		let kernel = TxKernelV4::from(&cb.kernel);
-		let kernel = TxKernelV3::from(&kernel);
 		CoinbaseV3 {
-			output,
-			kernel,
+			output: cb.output,
+			kernel: cb.kernel,
 			key_id: cb.key_id,
 		}
 	}

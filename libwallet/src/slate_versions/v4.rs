@@ -17,7 +17,7 @@
 //! * TBD
 
 use crate::grin_core::core::transaction::OutputFeatures;
-use crate::grin_core::core::transaction::TokenKey;
+use crate::grin_core::core::transaction::{TokenKey, Transaction};
 use crate::grin_core::libtx::secp_ser;
 use crate::grin_core::map_vec;
 use crate::grin_keychain::{BlindingFactor, Identifier};
@@ -34,11 +34,7 @@ use ed25519_dalek::Signature as DalekSignature;
 use std::convert::TryFrom;
 use uuid::Uuid;
 
-use crate::slate_versions::v3::{
-	InputV3, OutputV3, ParticipantDataV3, PaymentInfoV3, SlateV3, TransactionBodyV3, TransactionV3,
-	TxKernelV3, VersionCompatInfoV3,
-};
-use crate::slate_versions::v3::{TokenInputV3, TokenOutputV3, TokenTxKernelV3};
+use crate::slate_versions::v3::{ParticipantDataV3, SlateV3, VersionCompatInfoV3};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SlateV4 {
@@ -295,17 +291,10 @@ impl From<SlateV3> for SlateV4 {
 			fee,
 			height,
 			lock_height,
-			ttl_cutoff_height,
 			participant_data,
-			payment_proof,
 		} = slate;
 		let participant_data = map_vec!(participant_data, |data| ParticipantDataV4::from(data));
 		let version_info = VersionCompatInfoV4::from(&version_info);
-
-		let payment_proof = match payment_proof {
-			Some(p) => Some(PaymentInfoV4::from(&p)),
-			None => None,
-		};
 		let tx = TransactionV4::from(tx);
 		SlateV4 {
 			version_info,
@@ -317,9 +306,9 @@ impl From<SlateV3> for SlateV4 {
 			fee,
 			height,
 			lock_height,
-			ttl_cutoff_height,
+			ttl_cutoff_height: None,
 			participant_data,
-			payment_proof,
+			payment_proof: None,
 		}
 	}
 }
@@ -369,136 +358,6 @@ impl From<&VersionCompatInfoV3> for VersionCompatInfoV4 {
 	}
 }
 
-impl From<TransactionV3> for TransactionV4 {
-	fn from(tx: TransactionV3) -> TransactionV4 {
-		let TransactionV3 { offset, body } = tx;
-		let body = TransactionBodyV4::from(&body);
-		TransactionV4 { offset, body }
-	}
-}
-
-impl From<&TransactionBodyV3> for TransactionBodyV4 {
-	fn from(body: &TransactionBodyV3) -> TransactionBodyV4 {
-		let TransactionBodyV3 {
-			inputs,
-			token_inputs,
-			outputs,
-			token_outputs,
-			kernels,
-			token_kernels,
-		} = body;
-
-		let inputs = map_vec!(inputs, |inp| InputV4::from(inp));
-		let token_inputs = map_vec!(token_inputs, |inp| TokenInputV4::from(inp));
-		let outputs = map_vec!(outputs, |out| OutputV4::from(out));
-		let token_outputs = map_vec!(token_outputs, |out| TokenOutputV4::from(out));
-		let kernels = map_vec!(kernels, |kern| TxKernelV4::from(kern));
-		let token_kernels = map_vec!(token_kernels, |kern| TokenTxKernelV4::from(kern));
-		TransactionBodyV4 {
-			inputs,
-			token_inputs,
-			outputs,
-			token_outputs,
-			kernels,
-			token_kernels,
-		}
-	}
-}
-
-impl From<&InputV3> for InputV4 {
-	fn from(input: &InputV3) -> InputV4 {
-		let InputV3 { features, commit } = *input;
-		InputV4 { features, commit }
-	}
-}
-
-impl From<&TokenInputV3> for TokenInputV4 {
-	fn from(input: &TokenInputV3) -> TokenInputV4 {
-		let TokenInputV3 {
-			features,
-			token_type,
-			commit,
-		} = *input;
-		TokenInputV4 {
-			features,
-			token_type,
-			commit,
-		}
-	}
-}
-
-impl From<&OutputV3> for OutputV4 {
-	fn from(output: &OutputV3) -> OutputV4 {
-		let OutputV3 {
-			features,
-			commit,
-			proof,
-		} = *output;
-		OutputV4 {
-			features,
-			commit,
-			proof,
-		}
-	}
-}
-
-impl From<&TokenOutputV3> for TokenOutputV4 {
-	fn from(output: &TokenOutputV3) -> TokenOutputV4 {
-		let TokenOutputV3 {
-			features,
-			token_type,
-			commit,
-			proof,
-		} = *output;
-		TokenOutputV4 {
-			features,
-			token_type,
-			commit,
-			proof,
-		}
-	}
-}
-
-impl From<&TxKernelV3> for TxKernelV4 {
-	fn from(kernel: &TxKernelV3) -> TxKernelV4 {
-		let (fee, lock_height) = (kernel.fee, kernel.lock_height);
-		TxKernelV4 {
-			features: kernel.features,
-			fee,
-			lock_height,
-			excess: kernel.excess,
-			excess_sig: kernel.excess_sig,
-		}
-	}
-}
-
-impl From<&TokenTxKernelV3> for TokenTxKernelV4 {
-	fn from(kernel: &TokenTxKernelV3) -> TokenTxKernelV4 {
-		TokenTxKernelV4 {
-			features: kernel.features,
-			token_type: kernel.token_type,
-			lock_height: kernel.lock_height,
-			excess: kernel.excess,
-			excess_sig: kernel.excess_sig,
-		}
-	}
-}
-
-impl From<&PaymentInfoV3> for PaymentInfoV4 {
-	fn from(input: &PaymentInfoV3) -> PaymentInfoV4 {
-		let PaymentInfoV3 {
-			sender_address,
-			receiver_address,
-			receiver_signature,
-		} = *input;
-		PaymentInfoV4 {
-			sender_address,
-			receiver_address,
-			receiver_signature,
-		}
-	}
-}
-
 // V4 to V3
 #[allow(unused_variables)]
 impl TryFrom<&SlateV4> for SlateV3 {
@@ -527,12 +386,19 @@ impl TryFrom<&SlateV4> for SlateV3 {
 		let lock_height = *lock_height;
 		let participant_data = map_vec!(participant_data, |data| ParticipantDataV3::from(data));
 		let version_info = VersionCompatInfoV3::from(version_info);
-		let payment_proof = match payment_proof {
-			Some(p) => Some(PaymentInfoV3::from(p)),
-			None => None,
-		};
+		if ttl_cutoff_height.is_some() {
+			return Err(
+				ErrorKind::SlateInvalidDowngrade("V3 do not Support TTL".to_owned()).into(),
+			);
+		}
+		if payment_proof.is_some() {
+			return Err(ErrorKind::SlateInvalidDowngrade(
+				"V3 do not Support Payment Proof".to_owned(),
+			)
+			.into());
+		}
 		let tx = match tx {
-			Some(t) => TransactionV3::from(t),
+			Some(t) => Transaction::from(t),
 			None => {
 				return Err(ErrorKind::SlateInvalidDowngrade(
 					"Full transaction info required".to_owned(),
@@ -551,10 +417,8 @@ impl TryFrom<&SlateV4> for SlateV3 {
 			fee,
 			height,
 			lock_height,
-			ttl_cutoff_height,
 			participant_data,
 			version_info,
-			payment_proof,
 		})
 	}
 }
@@ -600,144 +464,6 @@ impl From<&VersionCompatInfoV4> for VersionCompatInfoV3 {
 			version,
 			orig_version,
 			block_header_version,
-		}
-	}
-}
-
-impl From<TransactionV4> for TransactionV3 {
-	fn from(tx: TransactionV4) -> TransactionV3 {
-		let TransactionV4 { offset, body } = tx;
-		let body = TransactionBodyV3::from(&body);
-		TransactionV3 { offset, body }
-	}
-}
-
-impl From<&TransactionV4> for TransactionV3 {
-	fn from(tx: &TransactionV4) -> TransactionV3 {
-		let TransactionV4 { offset, body } = tx;
-		let offset = offset.clone();
-		let body = TransactionBodyV3::from(body);
-		TransactionV3 { offset, body }
-	}
-}
-
-impl From<&TransactionBodyV4> for TransactionBodyV3 {
-	fn from(body: &TransactionBodyV4) -> TransactionBodyV3 {
-		let TransactionBodyV4 {
-			inputs,
-			token_inputs,
-			outputs,
-			token_outputs,
-			kernels,
-			token_kernels,
-		} = body;
-
-		let inputs = map_vec!(inputs, |inp| InputV3::from(inp));
-		let token_inputs = map_vec!(token_inputs, |inp| TokenInputV3::from(inp));
-		let outputs = map_vec!(outputs, |out| OutputV3::from(out));
-		let token_outputs = map_vec!(token_outputs, |out| TokenOutputV3::from(out));
-		let kernels = map_vec!(kernels, |kern| TxKernelV3::from(kern));
-		let token_kernels = map_vec!(token_kernels, |kern| TokenTxKernelV3::from(kern));
-		TransactionBodyV3 {
-			inputs,
-			token_inputs,
-			outputs,
-			token_outputs,
-			kernels,
-			token_kernels,
-		}
-	}
-}
-
-impl From<&InputV4> for InputV3 {
-	fn from(input: &InputV4) -> InputV3 {
-		let InputV4 { features, commit } = *input;
-		InputV3 { features, commit }
-	}
-}
-
-impl From<&TokenInputV4> for TokenInputV3 {
-	fn from(input: &TokenInputV4) -> TokenInputV3 {
-		let TokenInputV4 {
-			features,
-			token_type,
-			commit,
-		} = *input;
-		TokenInputV3 {
-			features,
-			token_type,
-			commit,
-		}
-	}
-}
-
-impl From<&OutputV4> for OutputV3 {
-	fn from(output: &OutputV4) -> OutputV3 {
-		let OutputV4 {
-			features,
-			commit,
-			proof,
-		} = *output;
-		OutputV3 {
-			features,
-			commit,
-			proof,
-		}
-	}
-}
-
-impl From<&TokenOutputV4> for TokenOutputV3 {
-	fn from(output: &TokenOutputV4) -> TokenOutputV3 {
-		let TokenOutputV4 {
-			features,
-			token_type,
-			commit,
-			proof,
-		} = *output;
-		TokenOutputV3 {
-			features,
-			token_type,
-			commit,
-			proof,
-		}
-	}
-}
-
-impl From<&TxKernelV4> for TxKernelV3 {
-	fn from(kernel: &TxKernelV4) -> TxKernelV3 {
-		TxKernelV3 {
-			features: kernel.features,
-			fee: kernel.fee,
-			lock_height: kernel.lock_height,
-			excess: kernel.excess,
-			excess_sig: kernel.excess_sig,
-		}
-	}
-}
-
-impl From<&TokenTxKernelV4> for TokenTxKernelV3 {
-	fn from(kernel: &TokenTxKernelV4) -> TokenTxKernelV3 {
-		TokenTxKernelV3 {
-			features: kernel.features,
-			token_type: kernel.token_type,
-			lock_height: kernel.lock_height,
-			excess: kernel.excess,
-			excess_sig: kernel.excess_sig,
-		}
-	}
-}
-
-impl From<&PaymentInfoV4> for PaymentInfoV3 {
-	fn from(input: &PaymentInfoV4) -> PaymentInfoV3 {
-		let PaymentInfoV4 {
-			sender_address,
-			receiver_address,
-			receiver_signature,
-		} = *input;
-		PaymentInfoV3 {
-			sender_address,
-			receiver_address,
-			receiver_signature,
 		}
 	}
 }

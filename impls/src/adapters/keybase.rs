@@ -292,7 +292,7 @@ fn poll(nseconds: u64, channel: &str) -> Option<Slate> {
 
 impl SlateSender for KeybaseChannel {
 	/// Send a slate to a keybase username then wait for a response for TTL seconds.
-	fn send_tx(&self, slate: &Slate) -> Result<Slate, Error> {
+	fn send_tx(&mut self, slate: &Slate, _finalize: bool) -> Result<Slate, Error> {
 		let id = slate.id;
 
 		// Send original slate to recipient with the SLATE_NEW topic
@@ -395,16 +395,11 @@ impl SlateReceiver for KeybaseAllChannels {
 							slate.amount as f64 / 1_000_000_000.0,
 							tx_uuid,
 						);
-						if let Err(e) = slate.verify_messages() {
-							error!("Error validating participant messages: {}", e);
-							return Err(e);
-						}
 						let res = {
 							foreign::receive_tx(
 								&mut **wallet_inst,
 								Some(mask.as_ref().unwrap()),
 								&slate,
-								None,
 								None,
 								false,
 							)

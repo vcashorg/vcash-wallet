@@ -52,18 +52,22 @@ mod error;
 mod internal;
 mod slate;
 pub mod slate_versions;
+mod slatepack;
 mod types;
 
 pub use crate::error::{Error, ErrorKind};
-pub use crate::slate::{ParticipantData, ParticipantMessageData, Slate};
+pub use crate::slate::{ParticipantData, Slate, SlateState};
 pub use crate::slate_versions::{
-	SlateVersion, VersionedCoinbase, VersionedSlate, CURRENT_SLATE_VERSION,
+	SlateVersion, VersionedBinSlate, VersionedCoinbase, VersionedSlate, CURRENT_SLATE_VERSION,
 	GRIN_BLOCK_HEADER_VERSION,
+};
+pub use crate::slatepack::{
+	Slatepack, SlatepackAddress, SlatepackArmor, SlatepackBin, Slatepacker, SlatepackerArgs,
 };
 pub use api_impl::owner_updater::StatusMessage;
 pub use api_impl::types::{
 	BlockFees, InitTxArgs, InitTxSendArgs, IssueInvoiceTxArgs, NodeHeightResult,
-	OutputCommitMapping, PaymentProof, SendTXArgs, VersionInfo,
+	OutputCommitMapping, PaymentProof, VersionInfo,
 };
 pub use api_impl::types::{IssueTokenArgs, TokenOutputCommitMapping};
 pub use internal::scan::scan;

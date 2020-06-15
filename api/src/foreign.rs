@@ -14,12 +14,14 @@
 
 //! Foreign API External Definition
 
+use crate::config::TorConfig;
 use crate::keychain::Keychain;
 use crate::libwallet::api_impl::foreign;
 use crate::libwallet::{
 	BlockFees, CbData, Error, NodeClient, NodeVersionInfo, Slate, VersionInfo, WalletInst,
 	WalletLCProvider,
 };
+use crate::try_slatepack_sync_workflow;
 use crate::util::secp::key::SecretKey;
 use crate::util::Mutex;
 use std::sync::Arc;
@@ -38,8 +40,10 @@ pub enum ForeignCheckMiddlewareFn {
 	VerifySlateMessages,
 	/// receive_tx
 	ReceiveTx,
-	/// finalize_invoice_tx
+	/// finalize_invoice_tx (delete HF3)
 	FinalizeInvoiceTx,
+	/// finalize_tx
+	FinalizeTx,
 }
 
 /// Main interface into all wallet API functions.
@@ -70,6 +74,9 @@ where
 	middleware: Option<ForeignCheckMiddleware>,
 	/// Stored keychain mask (in case the stored wallet seed is tokenized)
 	keychain_mask: Option<SecretKey>,
+	/// Optional TOR configuration, holding address of sender and
+	/// data directory
+	tor_config: Mutex<Option<TorConfig>>,
 }
 
 impl<'a, L, C, K> Foreign<'a, L, C, K>
@@ -102,6 +109,7 @@ where
 	/// ```
 	/// use grin_wallet_util::grin_keychain as keychain;
 	/// use grin_wallet_util::grin_util as util;
+	/// use grin_wallet_util::grin_core;
 	/// use grin_wallet_api as api;
 	/// use grin_wallet_config as config;
 	/// use grin_wallet_impls as impls;
@@ -113,10 +121,14 @@ where
 	/// use std::sync::Arc;
 	/// use util::{Mutex, ZeroingString};
 	///
+	/// use grin_core::global;
+	///
 	/// use api::Foreign;
 	/// use config::WalletConfig;
 	/// use impls::{DefaultWalletImpl, DefaultLCProvider, HTTPNodeClient};
 	/// use libwallet::WalletInst;
+	///
+	/// global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 	///
 	/// let mut wallet_config = WalletConfig::default();
 	/// # let dir = tempdir().map_err(|e| format!("{:#?}", e)).unwrap();
@@ -153,7 +165,7 @@ where
 	/// // All wallet functions operate on an Arc::Mutex to allow multithreading where needed
 	/// let mut wallet = Arc::new(Mutex::new(wallet));
 	///
-	/// let api_foreign = Foreign::new(wallet.clone(), None, None);
+	/// let api_foreign = Foreign::new(wallet.clone(), None, None, false);
 	/// // .. perform wallet operations
 	///
 	/// ```
@@ -162,13 +174,28 @@ where
 		wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
 		keychain_mask: Option<SecretKey>,
 		middleware: Option<ForeignCheckMiddleware>,
+		doctest_mode: bool,
 	) -> Self {
 		Foreign {
 			wallet_inst,
-			doctest_mode: false,
+			doctest_mode,
 			middleware,
 			keychain_mask,
+			tor_config: Mutex::new(None),
 		}
+	}
+
+	/// Set the TOR configuration for this instance of the ForeignAPI, used during
+	/// `recieve_tx` when a return address is specified
+	///
+	/// # Arguments
+	/// * `tor_config` - The optional [TorConfig](#) to use
+	/// # Returns
+	/// * Nothing
+
+	pub fn set_tor_config(&self, tor_config: Option<TorConfig>) {
+		let mut lock = self.tor_config.lock();
+		*lock = tor_config;
 	}
 
 	/// Return the version capabilities of the running ForeignApi Node
@@ -181,7 +208,7 @@ where
 	/// ```
 	/// # grin_wallet_api::doctest_helper_setup_doc_env_foreign!(wallet, wallet_config);
 	///
-	/// let mut api_foreign = Foreign::new(wallet.clone(), None, None);
+	/// let mut api_foreign = Foreign::new(wallet.clone(), None, None, false);
 	///
 	/// let version_info = api_foreign.check_version();
 	/// // check and proceed accordingly
@@ -233,7 +260,7 @@ where
 	/// ```
 	/// # grin_wallet_api::doctest_helper_setup_doc_env_foreign!(wallet, wallet_config);
 	///
-	/// let mut api_foreign = Foreign::new(wallet.clone(), None, None);
+	/// let mut api_foreign = Foreign::new(wallet.clone(), None, None, false);
 	///
 	/// let block_fees = BlockFees {
 	///     fees: 800000,
@@ -268,57 +295,6 @@ where
 		)
 	}
 
-	/// Verifies all messages in the slate match their public keys.
-	///
-	/// The option messages themselves are part of the `participant_data` field within the slate.
-	/// Messages are signed with the same key used to sign for the paricipant's inputs, and can thus be
-	/// verified with the public key found in the `public_blind_excess` field. This function is a
-	/// simple helper to returns whether all signatures in the participant data match their public
-	/// keys.
-	///
-	/// # Arguments
-	///
-	/// * `slate` - The transaction [`Slate`](../grin_wallet_libwallet/slate/struct.Slate.html).
-	///
-	/// # Returns
-	/// * `Ok(())` if successful and the signatures validate
-	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
-	///
-	/// # Example
-	/// Set up as in [`new`](struct.Foreign.html#method.new) method above.
-	/// ```
-	/// # grin_wallet_api::doctest_helper_setup_doc_env_foreign!(wallet, wallet_config);
-	///
-	/// let mut api_foreign = Foreign::new(wallet.clone(), None, None);
-	///
-	/// # let slate = Slate::blank(2);
-	/// // Receive a slate via some means
-	///
-	/// let res = api_foreign.verify_slate_messages(&slate);
-	///
-	/// if let Err(e) = res {
-	///     // Messages don't validate, likely return an error
-	///     // ...
-	/// } else {
-	///     // Slate messages are fine
-	/// }
-	///
-	///
-	/// ```
-
-	pub fn verify_slate_messages(&self, slate: &Slate) -> Result<(), Error> {
-		if let Some(m) = self.middleware.as_ref() {
-			let mut w_lock = self.wallet_inst.lock();
-			let w = w_lock.lc_provider()?.wallet_inst()?;
-			m(
-				ForeignCheckMiddlewareFn::VerifySlateMessages,
-				w.w2n_client().get_version_info(),
-				Some(slate),
-			)?;
-		}
-		foreign::verify_slate_messages(slate)
-	}
-
 	/// Recieve a tranaction created by another party, returning the modified
 	/// [`Slate`](../grin_wallet_libwallet/slate/struct.Slate.html) object, modified with
 	/// the recipient's output for the transaction amount, and public signature data. This slate can
@@ -340,12 +316,9 @@ where
 	/// excess value).
 	/// * `dest_acct_name` - The name of the account into which the slate should be received. If
 	/// `None`, the default account is used.
-	/// * `message` - An optional participant message to include alongside the recipient's public
-	/// ParticipantData within the slate. This message will include a signature created with the
-	/// recipient's private excess value, and will be publically verifiable. Note this message is for
-	/// the convenience of the participants during the exchange; it is not included in the final
-	/// transaction sent to the chain. The message will be truncated to 256 characters.
-	/// Validation of this message is optional.
+	/// * `r_addr` - If included, attempt to send the slate back to the sender using the slatepack sync
+	/// send (TOR). If providing this argument, check the `state` field of the slate to see if the
+	/// sync_send was successful (it should be S3 if the synced send sent successfully).
 	///
 	/// # Returns
 	/// * a result containing:
@@ -362,8 +335,8 @@ where
 	/// ```
 	/// # grin_wallet_api::doctest_helper_setup_doc_env_foreign!(wallet, wallet_config);
 	///
-	/// let mut api_foreign = Foreign::new(wallet.clone(), None, None);
-	/// # let slate = Slate::blank(2);
+	/// let mut api_foreign = Foreign::new(wallet.clone(), None, None, false);
+	/// # let slate = Slate::blank(2, false);
 	///
 	/// // . . .
 	/// // Obtain a sent slate somehow
@@ -379,7 +352,7 @@ where
 		&self,
 		slate: &Slate,
 		dest_acct_name: Option<&str>,
-		message: Option<String>,
+		r_addr: Option<String>,
 	) -> Result<Slate, Error> {
 		let mut w_lock = self.wallet_inst.lock();
 		let w = w_lock.lc_provider()?.wallet_inst()?;
@@ -390,24 +363,41 @@ where
 				Some(slate),
 			)?;
 		}
-		foreign::receive_tx(
+		let ret_slate = foreign::receive_tx(
 			&mut **w,
 			(&self.keychain_mask).as_ref(),
 			slate,
 			dest_acct_name,
-			message,
 			self.doctest_mode,
-		)
+		)?;
+		match r_addr {
+			Some(a) => {
+				let tor_config_lock = self.tor_config.lock();
+				let res = try_slatepack_sync_workflow(
+					&ret_slate,
+					&a,
+					tor_config_lock.clone(),
+					None,
+					true,
+					self.doctest_mode,
+				);
+				match res {
+					Ok(s) => return Ok(s.unwrap()),
+					Err(_) => return Ok(ret_slate),
+				}
+			}
+			None => Ok(ret_slate),
+		}
 	}
 
-	/// Finalizes an invoice transaction initiated by this wallet's Owner api.
+	/// Finalizes a (standard or invoice) transaction initiated by this wallet's Owner api.
 	/// This step assumes the paying party has completed round 1 and 2 of slate
-	/// creation, and added their partial signatures. The invoicer will verify
+	/// creation, and added their partial signatures. This wallet will verify
 	/// and add their partial sig, then create the finalized transaction,
 	/// ready to post to a node.
 	///
-	/// Note that this function DOES NOT POST the transaction to a node
-	/// for validation. This is done in separately via the
+	/// This function posts to the node if the `post_automatically`
+	/// argument is sent to true. Posting can be done in separately via the
 	/// [`post_tx`](struct.Owner.html#method.post_tx) function.
 	///
 	/// This function also stores the final transaction in the user's wallet files for retrieval
@@ -415,7 +405,8 @@ where
 	///
 	/// # Arguments
 	/// * `slate` - The transaction [`Slate`](../grin_wallet_libwallet/slate/struct.Slate.html). The
-	/// payer should have filled in round 1 and 2.
+	/// * `post_automatically` - If true, post the finalized transaction to the configured listening
+	/// node
 	///
 	/// # Returns
 	/// * Ok([`slate`](../grin_wallet_libwallet/slate/struct.Slate.html)) if successful,
@@ -428,7 +419,7 @@ where
 	/// # grin_wallet_api::doctest_helper_setup_doc_env_foreign!(wallet, wallet_config);
 	///
 	/// let mut api_owner = Owner::new(wallet.clone(), None);
-	/// let mut api_foreign = Foreign::new(wallet.clone(), None, None);
+	/// let mut api_foreign = Foreign::new(wallet.clone(), None, None, false);
 	///
 	/// // . . .
 	/// // Issue the invoice tx via the owner API
@@ -441,13 +432,13 @@ where
 	/// // If result okay, send to payer, who will apply the transaction via their
 	/// // owner API, then send back the slate
 	/// // ...
-	/// # let slate = Slate::blank(2);
+	/// # let slate = Slate::blank(2, true);
 	///
-	/// let slate = api_foreign.finalize_invoice_tx(&slate);
+	/// let slate = api_foreign.finalize_tx(&slate, true);
 	/// // if okay, then post via the owner API
 	/// ```
 
-	pub fn finalize_invoice_tx(&self, slate: &Slate) -> Result<Slate, Error> {
+	pub fn finalize_tx(&self, slate: &Slate, post_automatically: bool) -> Result<Slate, Error> {
 		let mut w_lock = self.wallet_inst.lock();
 		let w = w_lock.lc_provider()?.wallet_inst()?;
 		if let Some(m) = self.middleware.as_ref() {
@@ -457,7 +448,16 @@ where
 				Some(slate),
 			)?;
 		}
-		foreign::finalize_invoice_tx(&mut **w, (&self.keychain_mask).as_ref(), slate)
+		let post_automatically = match self.doctest_mode {
+			true => false,
+			false => post_automatically,
+		};
+		foreign::finalize_tx(
+			&mut **w,
+			(&self.keychain_mask).as_ref(),
+			slate,
+			post_automatically,
+		)
 	}
 }
 
@@ -469,9 +469,11 @@ macro_rules! doctest_helper_setup_doc_env_foreign {
 		use grin_wallet_config as config;
 		use grin_wallet_impls as impls;
 		use grin_wallet_libwallet as libwallet;
+		use grin_wallet_util::grin_core;
 		use grin_wallet_util::grin_keychain as keychain;
 		use grin_wallet_util::grin_util as util;
 
+		use grin_core::global;
 		use keychain::ExtKeychain;
 		use tempfile::tempdir;
 
@@ -482,6 +484,14 @@ macro_rules! doctest_helper_setup_doc_env_foreign {
 		use config::WalletConfig;
 		use impls::{DefaultLCProvider, DefaultWalletImpl, HTTPNodeClient};
 		use libwallet::{BlockFees, IssueInvoiceTxArgs, Slate, WalletInst};
+
+		// don't run on windows CI, which gives very inconsistent results
+		if cfg!(windows) {
+			return;
+			}
+
+		// Set our local chain_type for testing.
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 
 		let dir = tempdir().map_err(|e| format!("{:#?}", e)).unwrap();
 		let dir = dir

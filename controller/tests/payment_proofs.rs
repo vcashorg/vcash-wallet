@@ -25,8 +25,6 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
-use grin_wallet_util::OnionV3Address;
-
 #[macro_use]
 mod common;
 use common::{clean_output_dir, create_wallet_proxy, setup};
@@ -80,14 +78,13 @@ fn payment_proofs_test_impl(test_dir: &'static str) -> Result<(), libwallet::Err
 
 	let mut address = None;
 	wallet::controller::owner_single_use(Some(wallet2.clone()), mask2, None, |api, m| {
-		address = Some(api.get_public_proof_address(m, 0)?);
+		address = Some(api.get_slatepack_address(m, 0)?);
 		Ok(())
 	})?;
 
-	let address = OnionV3Address::from_bytes(address.as_ref().unwrap().to_bytes());
 	println!("Public address is: {:?}", address);
 	let amount = 60_000_000_000;
-	let mut slate = Slate::blank(1);
+	let mut slate = Slate::blank(1, false);
 	wallet::controller::owner_single_use(Some(wallet1.clone()), mask1, None, |sender_api, m| {
 		// note this will increment the block count as part of the transaction "Posting"
 		let args = InitTxArgs {
@@ -97,26 +94,26 @@ fn payment_proofs_test_impl(test_dir: &'static str) -> Result<(), libwallet::Err
 			max_outputs: 500,
 			num_change_outputs: 1,
 			selection_strategy_is_use_all: true,
-			payment_proof_recipient_address: Some(address.clone()),
+			payment_proof_recipient_address: address.clone(),
 			..Default::default()
 		};
 		let slate_i = sender_api.init_send_tx(m, args)?;
 
 		assert_eq!(
 			slate_i.payment_proof.as_ref().unwrap().receiver_address,
-			address.to_ed25519()?,
+			address.as_ref().unwrap().pub_key,
 		);
 		println!(
 			"Sender addr: {:?}",
 			slate_i.payment_proof.as_ref().unwrap().sender_address
 		);
 
-		// Check we are creating a tx with the expected lock_height of 0.
+		// Check we are creating a tx with kernel features 0
 		// We will check this produces a Plain kernel later.
-		assert_eq!(0, slate.lock_height);
+		assert_eq!(0, slate.kernel_features);
 
 		slate = client1.send_tx_slate_direct("wallet2", &slate_i)?;
-		sender_api.tx_lock_outputs(m, &slate, 0)?;
+		sender_api.tx_lock_outputs(m, &slate)?;
 
 		// Ensure what's stored in TX log for payment proof is correct
 		let (_, txs) = sender_api.retrieve_txs(m, true, None, Some(slate.id))?;
@@ -135,7 +132,7 @@ fn payment_proofs_test_impl(test_dir: &'static str) -> Result<(), libwallet::Err
 		assert!(pp.is_err());
 
 		slate = sender_api.finalize_tx(m, &slate)?;
-		sender_api.post_tx(m, slate.tx_or_err()?, true)?;
+		sender_api.post_tx(m, &slate, true)?;
 		Ok(())
 	})?;
 
@@ -145,7 +142,7 @@ fn payment_proofs_test_impl(test_dir: &'static str) -> Result<(), libwallet::Err
 		// Check payment proof here
 		let mut pp = sender_api.retrieve_payment_proof(m, true, None, Some(slate.id))?;
 
-		println!("{:?}", pp);
+		println!("Payment proof: {:?}", pp);
 
 		// verify, should be good
 		let res = sender_api.verify_payment_proof(m, &pp)?;

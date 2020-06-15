@@ -25,8 +25,7 @@ use crate::grin_keychain::{Identifier, Keychain};
 use crate::grin_util::logger::LoggingConfig;
 use crate::grin_util::secp::key::{PublicKey, SecretKey};
 use crate::grin_util::secp::{self, pedersen, Secp256k1};
-use crate::grin_util::ZeroingString;
-use crate::slate::ParticipantMessages;
+use crate::grin_util::{ToHex, ZeroingString};
 use crate::slate_versions::ser as dalek_ser;
 use chrono::prelude::*;
 use ed25519_dalek::PublicKey as DalekPublicKey;
@@ -204,7 +203,6 @@ where
 		&mut self,
 		keychain_mask: Option<&SecretKey>,
 		slate_id: &[u8],
-		participant_id: usize,
 	) -> Result<Context, Error>;
 
 	/// Iterate over all output data stored by the backend
@@ -223,10 +221,7 @@ where
 	fn store_tx(&self, uuid: &str, tx: &Transaction) -> Result<(), Error>;
 
 	/// Retrieves a stored transaction from a TxLogEntry
-	fn get_stored_tx(&self, entry: &TxLogEntry) -> Result<Option<Transaction>, Error>;
-
-	/// Retrieves a stored token transaction from a TokenTxLogEntry
-	fn get_stored_token_tx(&self, entry: &TokenTxLogEntry) -> Result<Option<Transaction>, Error>;
+	fn get_stored_tx(&self, uuid: &str) -> Result<Option<Transaction>, Error>;
 
 	/// Create a new write batch to update or remove output data
 	fn batch<'a>(
@@ -338,19 +333,10 @@ where
 	fn lock_token_output(&mut self, out: &mut TokenOutputData) -> Result<(), Error>;
 
 	/// Saves the private context associated with a slate id
-	fn save_private_context(
-		&mut self,
-		slate_id: &[u8],
-		participant_id: usize,
-		ctx: &Context,
-	) -> Result<(), Error>;
+	fn save_private_context(&mut self, slate_id: &[u8], ctx: &Context) -> Result<(), Error>;
 
 	/// Delete the private context associated with the slate id
-	fn delete_private_context(
-		&mut self,
-		slate_id: &[u8],
-		participant_id: usize,
-	) -> Result<(), Error>;
+	fn delete_private_context(&mut self, slate_id: &[u8]) -> Result<(), Error>;
 
 	/// Write the wallet data to backend file
 	fn commit(&self) -> Result<(), Error>;
@@ -531,7 +517,7 @@ impl ser::Writeable for OutputData {
 }
 
 impl ser::Readable for OutputData {
-	fn read(reader: &mut dyn ser::Reader) -> Result<OutputData, ser::Error> {
+	fn read<R: ser::Reader>(reader: &mut R) -> Result<OutputData, ser::Error> {
 		let data = reader.read_bytes_len_prefix()?;
 		serde_json::from_slice(&data[..]).map_err(|_| ser::Error::CorruptedData)
 	}
@@ -647,7 +633,7 @@ impl ser::Writeable for TokenOutputData {
 }
 
 impl ser::Readable for TokenOutputData {
-	fn read(reader: &mut dyn ser::Reader) -> Result<TokenOutputData, ser::Error> {
+	fn read<R: ser::Reader>(reader: &mut R) -> Result<TokenOutputData, ser::Error> {
 		let data = reader.read_bytes_len_prefix()?;
 		serde_json::from_slice(&data[..]).map_err(|_| ser::Error::CorruptedData)
 	}
@@ -762,6 +748,10 @@ pub struct Context {
 	/// Secret nonce (of which public is shared)
 	/// (basically a SecretKey)
 	pub sec_nonce: SecretKey,
+	/// only used if self-sending an invoice
+	pub initial_sec_key: SecretKey,
+	/// as above
+	pub initial_sec_nonce: SecretKey,
 	/// store my outputs + amounts between invocations
 	/// Id, mmr_index (if known), amount
 	pub output_ids: Vec<(Identifier, Option<u64>, u64)>,
@@ -774,12 +764,18 @@ pub struct Context {
 	/// store my token inputs
 	/// Id, mmr_index (if known), amount
 	pub token_input_ids: Vec<(Identifier, Option<u64>, u64)>,
+	/// store amount, so we can remove from slate if not
+	/// needed by the other party
+	pub amount: u64,
 	/// store the calculated fee
 	pub fee: u64,
-	/// keep track of the participant id
-	pub participant_id: usize,
 	/// Payment proof sender address derivation path, if needed
 	pub payment_proof_derivation_index: Option<u32>,
+	/// whether this was an invoice transaction
+	pub is_invoice: bool,
+	/// for invoice I2 Only, store the tx excess so we can
+	/// remove it from the slate on return
+	pub calculated_excess: Option<pedersen::Commitment>,
 }
 
 impl Context {
@@ -790,7 +786,7 @@ impl Context {
 		token_sec_key: SecretKey,
 		parent_key_id: &Identifier,
 		use_test_rng: bool,
-		participant_id: usize,
+		is_invoice: bool,
 	) -> Context {
 		let sec_nonce = match use_test_rng {
 			false => aggsig::create_secnonce(secp).unwrap(),
@@ -798,16 +794,20 @@ impl Context {
 		};
 		Context {
 			parent_key_id: parent_key_id.clone(),
-			sec_key,
+			sec_key: sec_key.clone(),
 			token_sec_key,
-			sec_nonce,
+			sec_nonce: sec_nonce.clone(),
+			initial_sec_key: sec_key.clone(),
+			initial_sec_nonce: sec_nonce.clone(),
 			input_ids: vec![],
 			output_ids: vec![],
+			amount: 0,
 			token_output_ids: vec![],
 			token_input_ids: vec![],
 			fee: 0,
-			participant_id: participant_id,
 			payment_proof_derivation_index: None,
+			is_invoice,
+			calculated_excess: None,
 		}
 	}
 }
@@ -886,7 +886,7 @@ impl ser::Writeable for Context {
 }
 
 impl ser::Readable for Context {
-	fn read(reader: &mut dyn ser::Reader) -> Result<Context, ser::Error> {
+	fn read<R: ser::Reader>(reader: &mut R) -> Result<Context, ser::Error> {
 		let data = reader.read_bytes_len_prefix()?;
 		serde_json::from_slice(&data[..]).map_err(|_| ser::Error::CorruptedData)
 	}
@@ -1074,8 +1074,6 @@ pub struct TxLogEntry {
 	#[serde(with = "secp_ser::opt_string_or_u64")]
 	#[serde(default)]
 	pub ttl_cutoff_height: Option<u64>,
-	/// Message data, stored as json
-	pub messages: Option<ParticipantMessages>,
 	/// Location of the store transaction, (reference or resending)
 	pub stored_tx: Option<String>,
 	/// Associated kernel excess, for later lookup if necessary
@@ -1101,7 +1099,7 @@ impl ser::Writeable for TxLogEntry {
 }
 
 impl ser::Readable for TxLogEntry {
-	fn read(reader: &mut dyn ser::Reader) -> Result<TxLogEntry, ser::Error> {
+	fn read<R: ser::Reader>(reader: &mut R) -> Result<TxLogEntry, ser::Error> {
 		let data = reader.read_bytes_len_prefix()?;
 		serde_json::from_slice(&data[..]).map_err(|_| ser::Error::CorruptedData)
 	}
@@ -1124,7 +1122,6 @@ impl TxLogEntry {
 			num_outputs: 0,
 			fee: None,
 			ttl_cutoff_height: None,
-			messages: None,
 			stored_tx: None,
 			kernel_excess: None,
 			kernel_lookup_min_height: None,
@@ -1231,8 +1228,6 @@ pub struct TokenTxLogEntry {
 	#[serde(with = "secp_ser::opt_string_or_u64")]
 	#[serde(default)]
 	pub ttl_cutoff_height: Option<u64>,
-	/// Message data, stored as json
-	pub messages: Option<ParticipantMessages>,
 	/// Location of the store transaction, (reference or resending)
 	pub stored_tx: Option<String>,
 	/// Associated kernel excess, for later lookup if necessary
@@ -1262,7 +1257,7 @@ impl ser::Writeable for TokenTxLogEntry {
 }
 
 impl ser::Readable for TokenTxLogEntry {
-	fn read(reader: &mut dyn ser::Reader) -> Result<TokenTxLogEntry, ser::Error> {
+	fn read<R: ser::Reader>(reader: &mut R) -> Result<TokenTxLogEntry, ser::Error> {
 		let data = reader.read_bytes_len_prefix()?;
 		serde_json::from_slice(&data[..]).map_err(|_| ser::Error::CorruptedData)
 	}
@@ -1290,7 +1285,6 @@ impl TokenTxLogEntry {
 			token_amount_debited: 0,
 			fee: None,
 			ttl_cutoff_height: None,
-			messages: None,
 			stored_tx: None,
 			kernel_excess: None,
 			token_kernel_excess: None,
@@ -1341,7 +1335,7 @@ impl ser::Writeable for StoredProofInfo {
 }
 
 impl ser::Readable for StoredProofInfo {
-	fn read(reader: &mut dyn ser::Reader) -> Result<StoredProofInfo, ser::Error> {
+	fn read<R: ser::Reader>(reader: &mut R) -> Result<StoredProofInfo, ser::Error> {
 		let data = reader.read_bytes_len_prefix()?;
 		serde_json::from_slice(&data[..]).map_err(|_| ser::Error::CorruptedData)
 	}
@@ -1363,7 +1357,7 @@ impl ser::Writeable for AcctPathMapping {
 }
 
 impl ser::Readable for AcctPathMapping {
-	fn read(reader: &mut dyn ser::Reader) -> Result<AcctPathMapping, ser::Error> {
+	fn read<R: ser::Reader>(reader: &mut R) -> Result<AcctPathMapping, ser::Error> {
 		let data = reader.read_bytes_len_prefix()?;
 		serde_json::from_slice(&data[..]).map_err(|_| ser::Error::CorruptedData)
 	}
@@ -1396,7 +1390,7 @@ impl ser::Writeable for ScannedBlockInfo {
 }
 
 impl ser::Readable for ScannedBlockInfo {
-	fn read(reader: &mut dyn ser::Reader) -> Result<ScannedBlockInfo, ser::Error> {
+	fn read<R: ser::Reader>(reader: &mut R) -> Result<ScannedBlockInfo, ser::Error> {
 		let data = reader.read_bytes_len_prefix()?;
 		serde_json::from_slice(&data[..]).map_err(|_| ser::Error::CorruptedData)
 	}
@@ -1433,7 +1427,7 @@ impl ser::Writeable for WalletInitStatus {
 }
 
 impl ser::Readable for WalletInitStatus {
-	fn read(reader: &mut dyn ser::Reader) -> Result<WalletInitStatus, ser::Error> {
+	fn read<R: ser::Reader>(reader: &mut R) -> Result<WalletInitStatus, ser::Error> {
 		let data = reader.read_bytes_len_prefix()?;
 		serde_json::from_slice(&data[..]).map_err(|_| ser::Error::CorruptedData)
 	}

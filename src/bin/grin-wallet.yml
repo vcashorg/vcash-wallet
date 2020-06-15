@@ -95,7 +95,7 @@ subcommands:
             help: Number of tokens to issue, max value could be 18,000,000,000
             index: 1
   - send:
-      about: Builds a transaction to send coins and sends to the specified listener directly
+      about: Builds a transaction to send coins and sends to the recipient via the Slatepack workflow
       args:
         - amount:
             help: Number of coins to send with optional fraction, e.g. 12.423
@@ -130,40 +130,19 @@ subcommands:
             long: change_outputs
             default_value: "1"
             takes_value: true
-        - method:
-            help: Method for sending this transaction
-            short: m
-            long: method
-            possible_values:
-              - http
-              - file
-              - self
-              - keybase
-            default_value: http
-            takes_value: true
         - dest:
-            help: Send the transaction to the provided server (start with http://) or save as file.
+            help: Intended recipient's Slatepack Address (or http listener address (DEPRECATED))
             short: d
             long: dest
             takes_value: true
         - request_payment_proof:
-            help: Request a payment proof from the recipient. If sending to a tor address, the address will be filled automatically.
+            help: Request a payment proof from the recipient. If present, the destination must be provided as a slatepack address.
             short: y
             long: request_payment_proof
-        - proof_address:
-            help: Recipient proof address. If not using TOR, must be provided seprarately by the recipient
-            short: z
-            long: proof_address
-            takes_value: true
         - fluff:
             help: Fluff the transaction (ignore Dandelion relay protocol)
             short: f
             long: fluff
-        - message:
-            help: Optional participant message to include
-            short: g
-            long: message
-            takes_value: true
         - stored_tx:
             help: If present, use the previously stored Unconfirmed transaction with given id
             short: t
@@ -174,21 +153,29 @@ subcommands:
             short: b
             long: ttl_blocks
             takes_value: true
-  - receive:
-      about: Processes a transaction file to accept a transfer from a sender
+        #TODO: Remove HF3
+        - v4:
+            help: Output a V4 slate prior to HF3 block
+            long: v4
+            takes_value: false
+  - unpack:
+      about: Unpack and display an armored Slatepack Message, decrypting if possible
       args:
-        - message:
-            help: Optional participant message to include
-            short: g
-            long: message
-            takes_value: true
         - input:
-            help: Partial transaction to process, expects the sender's transaction file.
+            help: File containing a Slatepack Message
+            short: i
+            long: input
+            takes_value: true
+  - receive:
+      about: Processes a Slatepack Message to accept a transfer from a sender
+      args:
+        - input:
+            help: File containing a Slatepack Message
             short: i
             long: input
             takes_value: true
   - finalize:
-      about: Processes a receiver's transaction file to finalize a transfer.
+      about: Processes a Slatepack Message to finalize a transfer.
       args:
         - input:
             help: Partial transaction to process, expects the receiver's transaction file.
@@ -203,27 +190,22 @@ subcommands:
             help: Do not post the transaction.
             short: n
             long: nopost
-        - dest:
-            help: Specify file to save the finalized slate.
-            short: d
-            long: dest
-            takes_value: true
   - invoice:
-      about: Initialize an invoice transaction.
+      about: Initialize an invoice transaction, outputting a Slatepack Message with the result
       args:
         - amount:
             help: Number of coins to invoice  with optional fraction, e.g. 12.423
             index: 1
-        - message:
-            help: Optional participant message to include
-            short: g
-            long: message
-            takes_value: true
         - dest:
-            help: Name of destination slate output file
+            help: Intended recipient's Slatepack Address
             short: d
             long: dest
             takes_value: true
+       #TODO: Remove HF3
+        - v4:
+            help: Output a V4 slate prior to HF3 block
+            long: v4
+            takes_value: false
   - pay:
       about: Spend coins to pay the provided invoice transaction
       args:
@@ -246,28 +228,13 @@ subcommands:
             help: Estimates all possible Coin/Output selection strategies.
             short: e
             long: estimate-selection
-        - method:
-            help: Method for sending the processed invoice back to the invoice creator
-            short: m
-            long: method
-            possible_values:
-              - file
-              - http
-              - self
-            default_value: file
-            takes_value: true
         - dest:
-            help: Send the transaction to the provided server (start with http://) or save as file.
+            help: The Slatepack address of the invoicing party's wallet (will override the address contained in the Slatepack)
             short: d
             long: dest
             takes_value: true
-        - message:
-            help: Optional participant message to include
-            short: g
-            long: message
-            takes_value: true
         - input:
-            help: Partial transaction to process, expects the invoicer's transaction file.
+            help: Incoming Slatepack Message to process
             short: i
             long: input
             takes_value: true

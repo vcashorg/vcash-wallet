@@ -15,20 +15,21 @@
 //! Owner API External Definition
 
 use chrono::prelude::*;
-use ed25519_dalek::PublicKey as DalekPublicKey;
+use ed25519_dalek::SecretKey as DalekSecretKey;
 use uuid::Uuid;
 
 use crate::config::{TorConfig, WalletConfig};
 use crate::core::core::Transaction;
 use crate::core::global;
-use crate::impls::create_sender;
+use crate::impls::HttpSlateSender;
+use crate::impls::SlateSender as _;
 use crate::keychain::{Identifier, Keychain};
 use crate::libwallet::api_impl::owner_updater::{start_updater_log_thread, StatusMessage};
 use crate::libwallet::api_impl::{owner, owner_updater};
 use crate::libwallet::{
 	AcctPathMapping, Error, ErrorKind, InitTxArgs, IssueInvoiceTxArgs, NodeClient,
-	NodeHeightResult, OutputCommitMapping, PaymentProof, Slate, TxLogEntry, WalletInfo, WalletInst,
-	WalletLCProvider,
+	NodeHeightResult, OutputCommitMapping, PaymentProof, Slate, Slatepack, SlatepackAddress,
+	TxLogEntry, WalletInfo, WalletInst, WalletLCProvider,
 };
 use crate::libwallet::{IssueTokenArgs, TokenOutputCommitMapping, TokenTxLogEntry};
 use crate::util::logger::LoggingConfig;
@@ -66,6 +67,8 @@ where
 	pub wallet_inst: Arc<Mutex<Box<dyn WalletInst<'static, L, C, K>>>>,
 	/// Flag to normalize some output during testing. Can mostly be ignored.
 	pub doctest_mode: bool,
+	/// retail TLD during doctest
+	pub doctest_retain_tld: bool,
 	/// Share ECDH key
 	pub shared_key: Arc<Mutex<Option<SecretKey>>>,
 	/// Update thread
@@ -109,11 +112,13 @@ where
 	/// ```
 	/// use grin_wallet_util::grin_keychain as keychain;
 	/// use grin_wallet_util::grin_util as util;
+	/// use grin_wallet_util::grin_core;
 	/// use grin_wallet_api as api;
 	/// use grin_wallet_config as config;
 	/// use grin_wallet_impls as impls;
 	/// use grin_wallet_libwallet as libwallet;
 	///
+	/// use grin_core::global;
 	/// use keychain::ExtKeychain;
 	/// use tempfile::tempdir;
 	///
@@ -124,6 +129,8 @@ where
 	/// use config::WalletConfig;
 	/// use impls::{DefaultWalletImpl, DefaultLCProvider, HTTPNodeClient};
 	/// use libwallet::WalletInst;
+	///
+	/// global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 	///
 	/// let mut wallet_config = WalletConfig::default();
 	/// # let dir = tempdir().map_err(|e| format!("{:#?}", e)).unwrap();
@@ -188,6 +195,7 @@ where
 		Owner {
 			wallet_inst,
 			doctest_mode: false,
+			doctest_retain_tld: false,
 			shared_key: Arc::new(Mutex::new(None)),
 			updater,
 			updater_running,
@@ -763,9 +771,10 @@ where
 	///
 	/// If the `send_args` [`InitTxSendArgs`](../grin_wallet_libwallet/types/struct.InitTxSendArgs.html),
 	/// of the [`args`](../grin_wallet_libwallet/types/struct.InitTxArgs.html), field is Some, this
-	/// function will attempt to perform a synchronous send to the recipient specified in the `dest`
-	/// field according to the `method` field, and will also finalize and post the transaction if
-	/// the `finalize` field is set.
+	/// function will attempt to send the slate back to the sender using the slatepack sync
+	/// send (TOR). If providing this argument, check the `state` field of the slate to see if the
+	/// sync_send was successful (it should be S2 if the sync sent successfully). It will also post
+	/// the transction if the `post_tx` field is set.
 	///
 	/// # Arguments
 	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
@@ -804,7 +813,6 @@ where
 	///     max_outputs: 500,
 	///     num_change_outputs: 1,
 	///     selection_strategy_is_use_all: false,
-	///     message: Some("Have some Grins. Love, Yeastplume".to_owned()),
 	///     ..Default::default()
 	/// };
 	/// let result = api_owner.init_send_tx(
@@ -816,7 +824,7 @@ where
 	///     // Send slate somehow
 	///     // ...
 	///     // Lock our outputs if we're happy the slate was (or is being) sent
-	///     api_owner.tx_lock_outputs(None, &slate, 0);
+	///     api_owner.tx_lock_outputs(None, &slate);
 	/// }
 	/// ```
 
@@ -826,7 +834,7 @@ where
 		args: InitTxArgs,
 	) -> Result<Slate, Error> {
 		let send_args = args.send_args.clone();
-		let mut slate = {
+		let slate = {
 			let mut w_lock = self.wallet_inst.lock();
 			let w = w_lock.lc_provider()?.wallet_inst()?;
 			if args.token_type.is_some() {
@@ -838,34 +846,42 @@ where
 			}
 			owner::init_send_tx(&mut **w, keychain_mask, args, self.doctest_mode)?
 		};
-		// Helper functionality. If send arguments exist, attempt to send
+		// Helper functionality. If send arguments exist, attempt to send sync and
+		// finalize
 		match send_args {
 			Some(sa) => {
-				//TODO: in case of keybase, the response might take 60s and leave the service hanging
-				match sa.method.as_ref() {
-					"http" | "keybase" => {}
-					_ => {
-						error!("unsupported payment method: {}", sa.method);
-						return Err(ErrorKind::ClientCallback(
-							"unsupported payment method".to_owned(),
-						)
-						.into());
-					}
-				};
 				let tor_config_lock = self.tor_config.lock();
-				let comm_adapter = create_sender(&sa.method, &sa.dest, tor_config_lock.clone())
-					.map_err(|e| ErrorKind::GenericError(format!("{}", e)))?;
-				slate = comm_adapter.send_tx(&slate)?;
-				self.tx_lock_outputs(keychain_mask, &slate, 0)?;
-				let slate = match sa.finalize {
-					true => self.finalize_tx(keychain_mask, &slate)?,
-					false => slate,
-				};
-
-				if sa.post_tx {
-					self.post_tx(keychain_mask, slate.tx_or_err()?, sa.fluff)?;
+				let res = try_slatepack_sync_workflow(
+					&slate,
+					&sa.dest,
+					tor_config_lock.clone(),
+					None,
+					false,
+					self.doctest_mode,
+				);
+				match res {
+					Ok(Some(s)) => {
+						if sa.post_tx {
+							self.tx_lock_outputs(keychain_mask, &s)?;
+							let ret_slate = self.finalize_tx(keychain_mask, &s)?;
+							let result = self.post_tx(keychain_mask, &ret_slate, sa.fluff);
+							match result {
+								Ok(_) => {
+									info!("Tx sent ok",);
+									return Ok(ret_slate);
+								}
+								Err(e) => {
+									error!("Tx sent fail: {}", e);
+									return Err(e);
+								}
+							}
+						} else {
+							return Ok(slate);
+						}
+					}
+					Ok(None) => Ok(slate),
+					Err(_) => Ok(slate),
 				}
-				Ok(slate)
 			}
 			None => Ok(slate),
 		}
@@ -927,6 +943,12 @@ where
 	/// it is up to the caller to present the request for payment to the user
 	/// and verify that payment should go ahead.
 	///
+	/// If the `send_args` [`InitTxSendArgs`](../grin_wallet_libwallet/types/struct.InitTxSendArgs.html),
+	/// of the [`args`](../grin_wallet_libwallet/types/struct.InitTxArgs.html), field is Some, this
+	/// function will attempt to send the slate back to the initiator using the slatepack sync
+	/// send (TOR). If providing this argument, check the `state` field of the slate to see if the
+	/// sync_send was successful (it should be I3 if the sync sent successfully).
+	///
 	/// This function also stores the final transaction in the user's wallet files for retrieval
 	/// via the [`get_stored_tx`](struct.Owner.html#method.get_stored_tx) function.
 	///
@@ -952,7 +974,7 @@ where
 	///
 	/// // . . .
 	/// // The slate has been recieved from the invoicer, somehow
-	/// # let slate = Slate::blank(2);
+	/// # let slate = Slate::blank(2, true);
 	/// let args = InitTxArgs {
 	///     src_acct_name: None,
 	///     amount: slate.amount,
@@ -979,7 +1001,28 @@ where
 	) -> Result<Slate, Error> {
 		let mut w_lock = self.wallet_inst.lock();
 		let w = w_lock.lc_provider()?.wallet_inst()?;
-		owner::process_invoice_tx(&mut **w, keychain_mask, slate, args, self.doctest_mode)
+		let send_args = args.send_args.clone();
+		let slate =
+			owner::process_invoice_tx(&mut **w, keychain_mask, slate, args, self.doctest_mode)?;
+		// Helper functionality. If send arguments exist, attempt to send
+		match send_args {
+			Some(sa) => {
+				let tor_config_lock = self.tor_config.lock();
+				let res = try_slatepack_sync_workflow(
+					&slate,
+					&sa.dest,
+					tor_config_lock.clone(),
+					None,
+					true,
+					self.doctest_mode,
+				);
+				match res {
+					Ok(s) => Ok(s.unwrap()),
+					Err(_) => Ok(slate),
+				}
+			}
+			None => Ok(slate),
+		}
 	}
 
 	/// Locks the outputs associated with the inputs to the transaction in the given
@@ -1021,7 +1064,6 @@ where
 	///     max_outputs: 500,
 	///     num_change_outputs: 1,
 	///     selection_strategy_is_use_all: false,
-	///     message: Some("Remember to lock this when we're happy this is sent".to_owned()),
 	///     ..Default::default()
 	/// };
 	/// let result = api_owner.init_send_tx(
@@ -1033,7 +1075,7 @@ where
 	///     // Send slate somehow
 	///     // ...
 	///     // Lock our outputs if we're happy the slate was (or is being) sent
-	///     api_owner.tx_lock_outputs(None, &slate, 0);
+	///     api_owner.tx_lock_outputs(None, &slate);
 	/// }
 	/// ```
 
@@ -1041,11 +1083,10 @@ where
 		&self,
 		keychain_mask: Option<&SecretKey>,
 		slate: &Slate,
-		participant_id: usize,
 	) -> Result<(), Error> {
 		let mut w_lock = self.wallet_inst.lock();
 		let w = w_lock.lc_provider()?.wallet_inst()?;
-		owner::tx_lock_outputs(&mut **w, keychain_mask, slate, participant_id)
+		owner::tx_lock_outputs(&mut **w, keychain_mask, slate)
 	}
 
 	/// Finalizes a transaction, after all parties
@@ -1085,7 +1126,6 @@ where
 	///     max_outputs: 500,
 	///     num_change_outputs: 1,
 	///     selection_strategy_is_use_all: false,
-	///     message: Some("Finalize this tx now".to_owned()),
 	///     ..Default::default()
 	/// };
 	/// let result = api_owner.init_send_tx(
@@ -1097,7 +1137,7 @@ where
 	///     // Send slate somehow
 	///     // ...
 	///     // Lock our outputs if we're happy the slate was (or is being) sent
-	///     let res = api_owner.tx_lock_outputs(None, &slate, 0);
+	///     let res = api_owner.tx_lock_outputs(None, &slate);
 	///     //
 	///     // Retrieve slate back from recipient
 	///     //
@@ -1145,7 +1185,6 @@ where
 	///     max_outputs: 500,
 	///     num_change_outputs: 1,
 	///     selection_strategy_is_use_all: false,
-	///     message: Some("Post this tx".to_owned()),
 	///     ..Default::default()
 	/// };
 	/// let result = api_owner.init_send_tx(
@@ -1157,19 +1196,19 @@ where
 	///     // Send slate somehow
 	///     // ...
 	///     // Lock our outputs if we're happy the slate was (or is being) sent
-	///     let res = api_owner.tx_lock_outputs(None, &slate, 0);
+	///     let res = api_owner.tx_lock_outputs(None, &slate);
 	///     //
 	///     // Retrieve slate back from recipient
 	///     //
 	///     let res = api_owner.finalize_tx(None, &slate);
-	///     let res = api_owner.post_tx(None, slate.tx_or_err().unwrap(), true);
+	///     let res = api_owner.post_tx(None, &slate, true);
 	/// }
 	/// ```
 
 	pub fn post_tx(
 		&self,
 		keychain_mask: Option<&SecretKey>,
-		tx: &Transaction,
+		slate: &Slate,
 		fluff: bool,
 	) -> Result<(), Error> {
 		let client = {
@@ -1179,7 +1218,7 @@ where
 			let _ = w.keychain(keychain_mask)?;
 			w.w2n_client().clone()
 		};
-		owner::post_tx(&client, tx, fluff)
+		owner::post_tx(&client, slate.tx_or_err()?, fluff)
 	}
 
 	/// Cancels a transaction. This entails:
@@ -1217,7 +1256,6 @@ where
 	///     max_outputs: 500,
 	///     num_change_outputs: 1,
 	///     selection_strategy_is_use_all: false,
-	///     message: Some("Cancel this tx".to_owned()),
 	///     ..Default::default()
 	/// };
 	/// let result = api_owner.init_send_tx(
@@ -1229,7 +1267,7 @@ where
 	///     // Send slate somehow
 	///     // ...
 	///     // Lock our outputs if we're happy the slate was (or is being) sent
-	///     let res = api_owner.tx_lock_outputs(None, &slate, 0);
+	///     let res = api_owner.tx_lock_outputs(None, &slate);
 	///     //
 	///     // We didn't get the slate back, or something else went wrong
 	///     //
@@ -1284,132 +1322,21 @@ where
 	/// let result = api_owner.retrieve_txs(None, update_from_node, tx_id, tx_slate_id);
 	///
 	/// if let Ok((was_updated, tx_log_entries)) = result {
-	///     let stored_tx = api_owner.get_stored_tx(None, &tx_log_entries[0]).unwrap();
+	///     let stored_tx = api_owner.get_stored_tx(None, tx_log_entries[0].tx_slate_id.unwrap()).unwrap();
 	///     //...
 	/// }
 	/// ```
 
-	// TODO: Should be accepting an id, not an entire entry struct
 	pub fn get_stored_tx(
 		&self,
 		keychain_mask: Option<&SecretKey>,
-		tx_log_entry: &TxLogEntry,
+		tx_id: Uuid,
 	) -> Result<Option<Transaction>, Error> {
 		let mut w_lock = self.wallet_inst.lock();
 		let w = w_lock.lc_provider()?.wallet_inst()?;
 		// Test keychain mask, to keep API consistent
 		let _ = w.keychain(keychain_mask)?;
-		owner::get_stored_tx(&**w, tx_log_entry)
-	}
-
-	/// Retrieves the stored token transaction associated with a TokenTxLogEntry. Can be used even after the
-	/// transaction has completed.
-	///
-	/// # Arguments
-	///
-	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
-	/// being used.
-	/// * `tx_log_entry` - A [`TxLogEntry`](../grin_wallet_libwallet/types/struct.TxLogEntry.html)
-	///
-	/// # Returns
-	/// * Ok with the stored  [`Transaction`](../grin_core/core/transaction/struct.Transaction.html)
-	/// if successful
-	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
-	///
-	/// # Example
-	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
-	/// ```
-	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
-	///
-	/// let mut api_owner = Owner::new(wallet.clone(), None);
-	/// let update_from_node = true;
-	/// let tx_id = None;
-	/// let tx_slate_id = None;
-	///
-	/// // Return all TokenTxLogEntries
-	/// let result = api_owner.retrieve_token_txs(None, update_from_node, tx_id, tx_slate_id);
-	///
-	/// if let Ok((was_updated, tx_log_entries)) = result {
-	///		let stored_tx = api_owner.get_stored_token_tx(None, &tx_log_entries[0]).unwrap();
-	///		//...
-	/// }
-	/// ```
-
-	// TODO: Should be accepting an id, not an entire entry struct
-	pub fn get_stored_token_tx(
-		&self,
-		keychain_mask: Option<&SecretKey>,
-		tx_log_entry: &TokenTxLogEntry,
-	) -> Result<Option<Transaction>, Error> {
-		let mut w_lock = self.wallet_inst.lock();
-		let w = w_lock.lc_provider()?.wallet_inst()?;
-		// Test keychain mask, to keep API consistent
-		let _ = w.keychain(keychain_mask)?;
-		owner::get_stored_token_tx(&**w, tx_log_entry)
-	}
-
-	/// Verifies all messages in the slate match their public keys.
-	///
-	/// The optional messages themselves are part of the `participant_data` field within the slate.
-	/// Messages are signed with the same key used to sign for the paricipant's inputs, and can thus be
-	/// verified with the public key found in the `public_blind_excess` field. This function is a
-	/// simple helper to returns whether all signatures in the participant data match their public
-	/// keys.
-	///
-	/// # Arguments
-	///
-	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
-	/// being used.
-	/// * `slate` - The transaction [`Slate`](../grin_wallet_libwallet/slate/struct.Slate.html).
-	///
-	/// # Returns
-	/// * `Ok(())` if successful and the signatures validate
-	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
-	///
-	/// # Example
-	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
-	/// ```
-	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
-	///
-	/// let mut api_owner = Owner::new(wallet.clone(), None);
-	/// let args = InitTxArgs {
-	///     src_acct_name: None,
-	///     amount: 2_000_000_000,
-	///     minimum_confirmations: 10,
-	///     max_outputs: 500,
-	///     num_change_outputs: 1,
-	///     selection_strategy_is_use_all: false,
-	///     message: Some("Just verify messages".to_owned()),
-	///     ..Default::default()
-	/// };
-	/// let result = api_owner.init_send_tx(
-	///     None,
-	///     args,
-	/// );
-	///
-	/// if let Ok(slate) = result {
-	///     // Send slate somehow
-	///     // ...
-	///     // Lock our outputs if we're happy the slate was (or is being) sent
-	///     let res = api_owner.tx_lock_outputs(None, &slate, 0);
-	///     //
-	///     // Retrieve slate back from recipient
-	///     //
-	///     let res = api_owner.verify_slate_messages(None, &slate);
-	/// }
-	/// ```
-	pub fn verify_slate_messages(
-		&self,
-		keychain_mask: Option<&SecretKey>,
-		slate: &Slate,
-	) -> Result<(), Error> {
-		{
-			let mut w_lock = self.wallet_inst.lock();
-			let w = w_lock.lc_provider()?.wallet_inst()?;
-			// Test keychain mask, to keep API consistent
-			let _ = w.keychain(keychain_mask)?;
-		}
-		owner::verify_slate_messages(slate)
+		owner::get_stored_tx(&**w, &tx_id)
 	}
 
 	/// Scans the entire UTXO set from the node, identify which outputs belong to the given wallet
@@ -1578,7 +1505,7 @@ where
 	pub fn get_top_level_directory(&self) -> Result<String, Error> {
 		let mut w_lock = self.wallet_inst.lock();
 		let lc = w_lock.lc_provider()?;
-		if self.doctest_mode {
+		if self.doctest_mode && !self.doctest_retain_tld {
 			Ok("/doctest/dir".to_owned())
 		} else {
 			lc.get_top_level_directory()
@@ -2152,10 +2079,12 @@ where
 		Ok(q.split_off(index))
 	}
 
-	/// Retrieve the public proof "addresses" associated with the active account at the
+	// SLATEPACK
+
+	/// Retrieve the public slatepack address associated with the active account at the
 	/// given derivation path.
 	///
-	/// In this case, an "address" means a Dalek ed25519 public key corresponding to
+	/// In this case, an "address" means a Slatepack Address corresponding to
 	/// a private key derived as follows:
 	///
 	/// e.g. The default parent account is at
@@ -2185,7 +2114,7 @@ where
 	/// * `derivation_index` - The index along the derivation path to retrieve an address for
 	///
 	/// # Returns
-	/// * Ok with a DalekPublicKey representing the address
+	/// * Ok with a SlatepackAddress representing the address
 	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
 	///
 	/// # Example
@@ -2200,7 +2129,7 @@ where
 	/// // Set up as above
 	/// # let api_owner = Owner::new(wallet.clone(), None);
 	///
-	/// let res = api_owner.get_public_proof_address(None, 0);
+	/// let res = api_owner.get_slatepack_address(None, 0);
 	///
 	/// if let Ok(_) = res {
 	///   // ...
@@ -2208,25 +2137,25 @@ where
 	///
 	/// ```
 
-	pub fn get_public_proof_address(
+	pub fn get_slatepack_address(
 		&self,
 		keychain_mask: Option<&SecretKey>,
 		derivation_index: u32,
-	) -> Result<DalekPublicKey, Error> {
-		owner::get_public_proof_address(self.wallet_inst.clone(), keychain_mask, derivation_index)
+	) -> Result<SlatepackAddress, Error> {
+		owner::get_slatepack_address(self.wallet_inst.clone(), keychain_mask, derivation_index)
 	}
 
-	/// Helper function to convert an Onion v3 address to a payment proof address (essentially
-	/// exctacting and verifying the public key)
+	/// Retrieve the private ed25519 slatepack key at the given derivation index. Currently
+	/// used to decrypt encrypted slatepack messages.
 	///
 	/// # Arguments
 	///
-	/// * `address_v3` - An V3 Onion address
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// * `derivation_index` - The index along the derivation path to for which to retrieve the secret key
 	///
 	/// # Returns
-	/// * Ok(DalekPublicKey) representing the public key associated with the address, if successful
-	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered
-	/// or the address provided is invalid
+	/// * Ok with an ed25519_dalek::SecretKey if successful
+	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
 	///
 	/// # Example
 	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
@@ -2240,21 +2169,181 @@ where
 	/// // Set up as above
 	/// # let api_owner = Owner::new(wallet.clone(), None);
 	///
-	/// let res = api_owner.proof_address_from_onion_v3(
-	///  "2a6at2obto3uvkpkitqp4wxcg6u36qf534eucbskqciturczzc5suyid"
-	/// );
+	/// let res = api_owner.get_slatepack_secret_key(None, 0);
 	///
 	/// if let Ok(_) = res {
 	///   // ...
 	/// }
 	///
-	/// let res = api_owner.stop_updater();
+	/// ```
+	pub fn get_slatepack_secret_key(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		derivation_index: u32,
+	) -> Result<DalekSecretKey, Error> {
+		owner::get_slatepack_secret_key(self.wallet_inst.clone(), keychain_mask, derivation_index)
+	}
+
+	/// Create a slatepack from a given slate, optionally encoding the slate with the provided
+	/// recipient public keys
+	///
+	/// # Arguments
+	///
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// * `sender_index` - If Some(n), the index along the derivation path to include as the sender
+	/// * `recipients` - Optional recipients for which to encrypt the slatepack's payload (i.e. the
+	/// slate). If an empty vec, the payload will remain unencrypted
+	///
+	/// # Returns
+	/// * Ok with a String representing an armored slatepack if successful
+	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
+	///
+	/// # Example
+	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
+	/// ```
+	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
+	///
+	/// use grin_core::global::ChainTypes;
+	///
+	/// use std::time::Duration;
+	///
+	/// // Set up as above
+	/// # let api_owner = Owner::new(wallet.clone(), None);
+	///
+	/// let mut api_owner = Owner::new(wallet.clone(), None);
+	/// let args = InitTxArgs {
+	///     src_acct_name: None,
+	///     amount: 2_000_000_000,
+	///     minimum_confirmations: 10,
+	///     max_outputs: 500,
+	///     num_change_outputs: 1,
+	///     selection_strategy_is_use_all: false,
+	///     ..Default::default()
+	/// };
+	/// let result = api_owner.init_send_tx(
+	///     None,
+	///     args,
+	/// );
+	///
+	/// if let Ok(slate) = result {
+	///     // Create a slatepack from our slate
+	///     let slatepack = api_owner.create_slatepack_message(
+	///        None,
+	///        &slate,
+	///        Some(0),
+	///        vec![],
+	///     );
+	/// }
+	///
 	/// ```
 
-	pub fn proof_address_from_onion_v3(&self, address_v3: &str) -> Result<DalekPublicKey, Error> {
-		let addr = OnionV3Address::try_from(address_v3)?;
-		Ok(addr.to_ed25519()?)
+	pub fn create_slatepack_message(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		slate: &Slate,
+		sender_index: Option<u32>,
+		recipients: Vec<SlatepackAddress>,
+	) -> Result<String, Error> {
+		owner::create_slatepack_message(
+			self.wallet_inst.clone(),
+			keychain_mask,
+			slate,
+			sender_index,
+			recipients,
+		)
 	}
+
+	/// Extract the slate from the given slatepack. If the slatepack payload is encrypted, attempting to
+	/// decrypt with keys at the given address derivation path indices.
+	///
+	/// # Arguments
+	///
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using, if
+	/// * `slatepack` - A string representing an armored slatepack
+	/// * `secret_indices` - Indices along this wallet's deriviation path with which to attempt
+	/// decryption. This function will attempt to use secret keys at each index along this path
+	/// to attempt to decrypt the payload, returning an error if none of the keys match.
+	///
+	/// # Returns
+	/// * Ok with a [Slate](../grin_wallet_libwallet/slate/struct.Slate.html) if successful
+	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
+	///
+	/// # Example
+	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
+	/// ```
+	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
+	///
+	/// use grin_core::global::ChainTypes;
+	///
+	/// use std::time::Duration;
+	///
+	/// // Set up as above
+	/// # let api_owner = Owner::new(wallet.clone(), None);
+	/// // ... receive a slatepack from somewhere
+	/// # let slatepack_string = String::from("");
+	///   let res = api_owner.slate_from_slatepack_message(
+	///    None,
+	///    slatepack_string,
+	///    vec![0, 1, 2],
+	///   );
+	/// ```
+
+	pub fn slate_from_slatepack_message(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		slatepack: String,
+		secret_indices: Vec<u32>,
+	) -> Result<Slate, Error> {
+		owner::slate_from_slatepack_message(
+			self.wallet_inst.clone(),
+			keychain_mask,
+			slatepack,
+			secret_indices,
+		)
+	}
+
+	/// Decode an armored slatepack, returning a Slatepack object that can be
+	/// viewed, manipulated, output as json, etc
+	///
+	/// # Arguments
+	///
+	/// * `keychain_mask` - Wallet secret mask to XOR against the stored wallet seed before using
+	/// * `slatepack` - A string representing an armored slatepack
+	/// * `decrypt` - If true and the slatepack message content is encrypted, attempt to decrypt
+	///
+	/// # Returns
+	/// * Ok with a [Slatepack](../grin_wallet_libwallet/slatepack/types/struct.Slatepack.html) if successful
+	/// * or [`libwallet::Error`](../grin_wallet_libwallet/struct.Error.html) if an error is encountered.
+	///
+	/// # Example
+	/// Set up as in [`new`](struct.Owner.html#method.new) method above.
+	/// ```
+	/// # grin_wallet_api::doctest_helper_setup_doc_env!(wallet, wallet_config);
+	///
+	/// use grin_core::global::ChainTypes;
+	///
+	/// use std::time::Duration;
+	///
+	/// // Set up as above
+	/// # let api_owner = Owner::new(wallet.clone(), None);
+	/// # let slatepack_string = String::from("");
+	/// // .. receive a slatepack from somewhere
+	/// let res = api_owner.decode_slatepack_message(
+	///    slatepack_string,
+	///    false,
+	/// );
+	///
+	/// ```
+
+	pub fn decode_slatepack_message(
+		&self,
+		slatepack: String,
+		decrypt: bool,
+	) -> Result<Slatepack, Error> {
+		owner::decode_slatepack_message(slatepack, decrypt)
+	}
+
+	// PAYMENT PROOFS
 
 	/// Returns a single, exportable [PaymentProof](../grin_wallet_libwallet/api_impl/types/struct.PaymentProof.html)
 	/// from a completed transaction within the wallet.
@@ -2381,6 +2470,110 @@ where
 	) -> Result<(bool, bool), Error> {
 		owner::verify_payment_proof(self.wallet_inst.clone(), keychain_mask, proof)
 	}
+
+	/// Return whether this transaction is marked as invoice in the context
+	// TODO: Remove post HF3
+	// This will be removed once state is added to slate
+	pub fn context_is_invoice(
+		&self,
+		keychain_mask: Option<&SecretKey>,
+		slate: &Slate,
+	) -> Result<bool, Error> {
+		owner::context_is_invoice(self.wallet_inst.clone(), keychain_mask, slate)
+	}
+}
+
+/// attempt to send slate synchronously, starting with TOR and downgrading to HTTP
+pub fn try_slatepack_sync_workflow(
+	slate: &Slate,
+	dest: &str,
+	tor_config: Option<TorConfig>,
+	tor_sender: Option<HttpSlateSender>,
+	send_to_finalize: bool,
+	test_mode: bool,
+) -> Result<Option<Slate>, libwallet::Error> {
+	let mut ret_slate = Slate::blank(2, false);
+	let mut send_sync = |mut sender: HttpSlateSender, method_str: &str| match sender
+		.send_tx(&slate, send_to_finalize)
+	{
+		Ok(s) => {
+			ret_slate = s;
+			return Ok(());
+		}
+		Err(e) => {
+			debug!(
+				"Send ({}): Could not send Slate via {}: {}",
+				method_str, method_str, e
+			);
+			return Err(e);
+		}
+	};
+
+	// First, try TOR
+	match SlatepackAddress::try_from(dest) {
+		Ok(address) => {
+			let tor_addr = OnionV3Address::try_from(&address).unwrap();
+			// Try sending to the destination via TOR
+			let sender = match tor_sender {
+				None => {
+					if test_mode {
+						None
+					} else {
+						match HttpSlateSender::with_socks_proxy(
+							&tor_addr.to_http_str(),
+							&tor_config.as_ref().unwrap().socks_proxy_addr,
+							&tor_config.as_ref().unwrap().send_config_dir,
+						) {
+							Ok(s) => Some(s),
+							Err(e) => {
+								debug!("Send (TOR): Cannot create TOR Slate sender {:?}", e);
+								None
+							}
+						}
+					}
+				}
+				Some(s) => {
+					if test_mode {
+						None
+					} else {
+						Some(s)
+					}
+				}
+			};
+			if let Some(s) = sender {
+				warn!("Attempting to send transaction via TOR");
+				match send_sync(s, "TOR") {
+					Ok(_) => return Ok(Some(ret_slate)),
+					Err(e) => {
+						debug!("Unable to send via TOR: {}", e);
+						warn!("Unable to send transaction via TOR. Attempting alternate methods.");
+					}
+				}
+			}
+		}
+		Err(e) => {
+			debug!("Send (TOR): Destination is not SlatepackAddress {:?}", e);
+		}
+	}
+
+	// Try Fallback to HTTP for deprecation period
+	match HttpSlateSender::new(&dest) {
+		Ok(sender) => {
+			println!("Attempting to send transaction via HTTP (deprecated)");
+			match send_sync(sender, "HTTP") {
+				Ok(_) => return Ok(Some(ret_slate)),
+				Err(e) => {
+					debug!("Unable to send via HTTP: {}", e);
+					warn!("Unable to send transaction via HTTP. Will output Slatepack.");
+					return Ok(None);
+				}
+			}
+		}
+		Err(e) => {
+			debug!("Send (HTTP): Cannot create HTTP Slate sender {:?}", e);
+			return Ok(None);
+		}
+	}
 }
 
 #[doc(hidden)]
@@ -2395,6 +2588,8 @@ macro_rules! doctest_helper_setup_doc_env {
 		use grin_wallet_util::grin_keychain as keychain;
 		use grin_wallet_util::grin_util as util;
 
+		use grin_core::global;
+
 		use keychain::ExtKeychain;
 		use tempfile::tempdir;
 
@@ -2407,6 +2602,14 @@ macro_rules! doctest_helper_setup_doc_env {
 		use libwallet::{BlockFees, InitTxArgs, IssueInvoiceTxArgs, Slate, WalletInst};
 
 		use uuid::Uuid;
+
+		// don't run on windows CI, which gives very inconsistent results
+		if cfg!(windows) {
+			return;
+			}
+
+		// Set our local chain_type for testing.
+		global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
 
 		let dir = tempdir().map_err(|e| format!("{:#?}", e)).unwrap();
 		let dir = dir

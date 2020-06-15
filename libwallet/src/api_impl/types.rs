@@ -20,7 +20,7 @@ use crate::grin_util::secp::pedersen;
 use crate::slate_versions::ser as dalek_ser;
 use crate::slate_versions::SlateVersion;
 use crate::types::{OutputData, TokenOutputData};
-use grin_wallet_util::OnionV3Address;
+use crate::SlatepackAddress;
 
 use ed25519_dalek::Signature as DalekSignature;
 
@@ -93,12 +93,6 @@ pub struct InitTxArgs {
 	/// as many outputs as are needed to meet the amount, (and no more) starting with the smallest
 	/// value outputs.
 	pub selection_strategy_is_use_all: bool,
-	/// An optional participant message to include alongside the sender's public
-	/// ParticipantData within the slate. This message will include a signature created with the
-	/// sender's private excess value, and will be publically verifiable. Note this message is for
-	/// the convenience of the participants during the exchange; it is not included in the final
-	/// transaction sent to the chain. The message will be truncated to 256 characters.
-	pub message: Option<String>,
 	/// Optionally set the output target slate version (acceptable
 	/// down to the minimum slate version compatible with the current. If `None` the slate
 	/// is generated with the latest version.
@@ -108,9 +102,8 @@ pub struct InitTxArgs {
 	#[serde(default)]
 	pub ttl_blocks: Option<u64>,
 	/// If set, require a payment proof for the particular recipient
-	#[serde(with = "dalek_ser::option_ov3_serde")]
 	#[serde(default)]
-	pub payment_proof_recipient_address: Option<OnionV3Address>,
+	pub payment_proof_recipient_address: Option<SlatepackAddress>,
 	/// If true, just return an estimate of the resulting slate, containing fees and amounts
 	/// locked without actually locking outputs or creating the transaction. Note if this is set to
 	/// 'true', the amount field in the slate will contain the total amount locked, not the provided
@@ -125,12 +118,8 @@ pub struct InitTxArgs {
 /// in one go
 #[derive(Clone, Serialize, Deserialize)]
 pub struct InitTxSendArgs {
-	/// The transaction method. Can currently be 'http' or 'keybase'.
-	pub method: String,
 	/// The destination, contents will depend on the particular method
 	pub dest: String,
-	/// Whether to finalize the result immediately if the send was successful
-	pub finalize: bool,
 	/// Whether to post the transasction if the send and finalize were successful
 	pub post_tx: bool,
 	/// Whether to use dandelion when posting. If false, skip the dandelion relay
@@ -147,7 +136,6 @@ impl Default for InitTxArgs {
 			max_outputs: 500,
 			num_change_outputs: 1,
 			selection_strategy_is_use_all: true,
-			message: None,
 			target_slate_version: None,
 			ttl_blocks: None,
 			estimate_only: Some(false),
@@ -169,8 +157,6 @@ pub struct IssueInvoiceTxArgs {
 	pub amount: u64,
 	/// The invoice token type
 	pub token_type: Option<String>,
-	/// Optional message, that will be signed
-	pub message: Option<String>,
 	/// Optionally set the output target slate version (acceptable
 	/// down to the minimum slate version compatible with the current. If `None` the slate
 	/// is generated with the latest version.
@@ -183,7 +169,6 @@ impl Default for IssueInvoiceTxArgs {
 			dest_acct_name: None,
 			amount: 0,
 			token_type: None,
-			message: None,
 			target_slate_version: None,
 		}
 	}
@@ -270,15 +255,13 @@ pub struct PaymentProof {
 		deserialize_with = "secp_ser::commitment_from_hex"
 	)]
 	pub excess: pedersen::Commitment,
-	/// Recipient Wallet Address (Onion V3)
-	#[serde(with = "dalek_ser::ov3_serde")]
-	pub recipient_address: OnionV3Address,
+	/// Recipient Wallet Address
+	pub recipient_address: SlatepackAddress,
 	/// Recipient Signature
 	#[serde(with = "dalek_ser::dalek_sig_serde")]
 	pub recipient_sig: DalekSignature,
-	/// Sender Wallet Address (Onion V3)
-	#[serde(with = "dalek_ser::ov3_serde")]
-	pub sender_address: OnionV3Address,
+	/// Sender Wallet Address
+	pub sender_address: SlatepackAddress,
 	/// Sender Signature
 	#[serde(with = "dalek_ser::dalek_sig_serde")]
 	pub sender_sig: DalekSignature,

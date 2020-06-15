@@ -37,7 +37,7 @@ use crate::libwallet::{
 use crate::libwallet::{TokenOutputData, TokenTxLogEntry};
 use crate::util::secp::constants::SECRET_KEY_SIZE;
 use crate::util::secp::key::SecretKey;
-use crate::util::{self, secp};
+use crate::util::{self, secp, ToHex};
 
 use rand::rngs::mock::StepRng;
 use rand::thread_rng;
@@ -266,12 +266,13 @@ where
 		/*if self.config.no_commit_cache == Some(true) {
 			Ok(None)
 		} else {*/
-		Ok(Some(util::to_hex(
+		Ok(Some(
 			self.keychain(keychain_mask)?
 				.commit(amount, &id, SwitchCommitmentType::Regular)?
 				.0
-				.to_vec(), // TODO: proper support for different switch commitment schemes
-		)))
+				.to_vec()
+				.to_hex(), // TODO: proper support for different switch commitment schemes
+		))
 		/*}*/
 	}
 
@@ -353,13 +354,8 @@ where
 		&mut self,
 		keychain_mask: Option<&SecretKey>,
 		slate_id: &[u8],
-		participant_id: usize,
 	) -> Result<Context, Error> {
-		let ctx_key = to_key_u64(
-			PRIVATE_TX_CONTEXT_PREFIX,
-			&mut slate_id.to_vec(),
-			participant_id as u64,
-		);
+		let ctx_key = to_key_u64(PRIVATE_TX_CONTEXT_PREFIX, &mut slate_id.to_vec(), 0);
 		let (blind_xor_key, nonce_xor_key) =
 			private_ctx_xor_keys(&self.keychain(keychain_mask)?, slate_id)?;
 
@@ -396,17 +392,14 @@ where
 			.join(filename);
 		let path_buf = Path::new(&path).to_path_buf();
 		let mut stored_tx = File::create(path_buf)?;
-		let tx_hex = util::to_hex(ser::ser_vec(tx, ser::ProtocolVersion(2)).unwrap());
+		let tx_hex = ser::ser_vec(tx, ser::ProtocolVersion(2)).unwrap().to_hex();
 		stored_tx.write_all(&tx_hex.as_bytes())?;
 		stored_tx.sync_all()?;
 		Ok(())
 	}
 
-	fn get_stored_tx(&self, entry: &TxLogEntry) -> Result<Option<Transaction>, Error> {
-		let filename = match entry.stored_tx.clone() {
-			Some(f) => f,
-			None => return Ok(None),
-		};
+	fn get_stored_tx(&self, uuid: &str) -> Result<Option<Transaction>, Error> {
+		let filename = format!("{}.vcashtx", uuid);
 		let path = path::Path::new(&self.data_file_dir)
 			.join(TX_SAVE_DIR)
 			.join(filename);
@@ -415,34 +408,12 @@ where
 		let mut content = String::new();
 		tx_f.read_to_string(&mut content)?;
 		let tx_bin = util::from_hex(&content).unwrap();
-		let tx_ret = ser::deserialize::<Transaction>(&mut &tx_bin[..], ser::ProtocolVersion(1));
+		let tx_ret = ser::deserialize(&mut &tx_bin[..], ser::ProtocolVersion(1));
 		if tx_ret.is_ok() {
 			return Ok(Some(tx_ret.unwrap()));
 		}
 		Ok(Some(
-			ser::deserialize::<Transaction>(&mut &tx_bin[..], ser::ProtocolVersion(2)).unwrap(),
-		))
-	}
-
-	fn get_stored_token_tx(&self, entry: &TokenTxLogEntry) -> Result<Option<Transaction>, Error> {
-		let filename = match entry.stored_tx.clone() {
-			Some(f) => f,
-			None => return Ok(None),
-		};
-		let path = path::Path::new(&self.data_file_dir)
-			.join(TX_SAVE_DIR)
-			.join(filename);
-		let tx_file = Path::new(&path).to_path_buf();
-		let mut tx_f = File::open(tx_file)?;
-		let mut content = String::new();
-		tx_f.read_to_string(&mut content)?;
-		let tx_bin = util::from_hex(&content).unwrap();
-		let tx_ret = ser::deserialize::<Transaction>(&mut &tx_bin[..], ser::ProtocolVersion(1));
-		if tx_ret.is_ok() {
-			return Ok(Some(tx_ret.unwrap()));
-		}
-		Ok(Some(
-			ser::deserialize::<Transaction>(&mut &tx_bin[..], ser::ProtocolVersion(2)).unwrap(),
+			ser::deserialize(&mut &tx_bin[..], ser::ProtocolVersion(2)).unwrap(),
 		))
 	}
 
@@ -829,17 +800,8 @@ where
 		self.save_token(out.clone())
 	}
 
-	fn save_private_context(
-		&mut self,
-		slate_id: &[u8],
-		participant_id: usize,
-		ctx: &Context,
-	) -> Result<(), Error> {
-		let ctx_key = to_key_u64(
-			PRIVATE_TX_CONTEXT_PREFIX,
-			&mut slate_id.to_vec(),
-			participant_id as u64,
-		);
+	fn save_private_context(&mut self, slate_id: &[u8], ctx: &Context) -> Result<(), Error> {
+		let ctx_key = to_key_u64(PRIVATE_TX_CONTEXT_PREFIX, &mut slate_id.to_vec(), 0);
 		let (blind_xor_key, nonce_xor_key) = private_ctx_xor_keys(self.keychain(), slate_id)?;
 
 		let mut s_ctx = ctx.clone();
@@ -856,16 +818,8 @@ where
 		Ok(())
 	}
 
-	fn delete_private_context(
-		&mut self,
-		slate_id: &[u8],
-		participant_id: usize,
-	) -> Result<(), Error> {
-		let ctx_key = to_key_u64(
-			PRIVATE_TX_CONTEXT_PREFIX,
-			&mut slate_id.to_vec(),
-			participant_id as u64,
-		);
+	fn delete_private_context(&mut self, slate_id: &[u8]) -> Result<(), Error> {
+		let ctx_key = to_key_u64(PRIVATE_TX_CONTEXT_PREFIX, &mut slate_id.to_vec(), 0);
 		self.db
 			.borrow()
 			.as_ref()

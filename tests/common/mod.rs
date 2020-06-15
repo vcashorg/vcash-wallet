@@ -131,7 +131,17 @@ pub fn clean_output_dir(test_dir: &str) {
 pub fn setup(test_dir: &str) {
 	util::init_test_logger();
 	clean_output_dir(test_dir);
-	global::set_mining_mode(ChainTypes::AutomatedTesting);
+	global::set_local_chain_type(global::ChainTypes::AutomatedTesting);
+}
+
+/// Some tests require the global chain_type to be configured.
+/// If tokio is used in any tests we need to ensure any threads spawned
+/// have the chain_type configured correctly.
+/// It is recommended to avoid relying on this if at all possible as global chain_type
+/// leaks across multiple tests and will likely have unintended consequences.
+#[allow(dead_code)]
+pub fn setup_global_chain_type() {
+	global::init_global_chain_type(global::ChainTypes::AutomatedTesting);
 }
 
 /// Create a wallet config file in the given current directory
@@ -355,7 +365,7 @@ where
 	}
 
 	let res = serde_json::from_str(&res).unwrap();
-	let res = easy_jsonrpc::Response::from_json_response(res).unwrap();
+	let res = easy_jsonrpc_mw::Response::from_json_response(res).unwrap();
 	let res = res.outputs.get(&id).unwrap().clone().unwrap();
 	if res["Err"] != json!(null) {
 		Ok(Err(WalletAPIReturnError {
@@ -408,7 +418,7 @@ where
 			code: res["error"]["code"].as_i64().unwrap() as i32,
 		}));
 	}
-	let res = easy_jsonrpc::Response::from_json_response(res).unwrap();
+	let res = easy_jsonrpc_mw::Response::from_json_response(res).unwrap();
 	let res = res
 		.outputs
 		.get(&(internal_request_id as u64))

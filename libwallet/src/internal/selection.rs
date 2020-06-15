@@ -25,6 +25,7 @@ use crate::grin_core::libtx::{
 };
 use crate::grin_keychain::{Identifier, Keychain};
 use crate::grin_util::secp::key::{SecretKey, ZERO_KEY};
+use crate::grin_util::secp::pedersen;
 use crate::internal::keys;
 use crate::slate::Slate;
 use crate::types::*;
@@ -41,11 +42,13 @@ pub fn build_send_tx<'a, T: ?Sized, C, K>(
 	keychain: &K,
 	keychain_mask: Option<&SecretKey>,
 	slate: &mut Slate,
+	current_height: u64,
 	minimum_confirmations: u64,
 	max_outputs: usize,
 	change_outputs: usize,
 	selection_strategy_is_use_all: bool,
 	parent_key_id: Identifier,
+	is_invoice: bool,
 	use_test_nonce: bool,
 ) -> Result<Context, Error>
 where
@@ -53,11 +56,15 @@ where
 	C: NodeClient + 'a,
 	K: Keychain + 'a,
 {
+	//TODO: Revise HF3. If we're sending V4 slates, only include
+	// change outputs in excess sum
+	let include_inputs_in_sum = !slate.is_compact();
+
 	let (elems, inputs, change_amounts_derivations, fee) = select_send_tx(
 		wallet,
 		keychain_mask,
 		slate.amount,
-		slate.height,
+		current_height,
 		minimum_confirmations,
 		max_outputs,
 		change_outputs,
@@ -65,6 +72,7 @@ where
 		&parent_key_id,
 		0,
 		0,
+		include_inputs_in_sum,
 	)?;
 
 	// Update the fee on the slate so we account for this when building the tx.
@@ -80,10 +88,11 @@ where
 		ZERO_KEY,
 		&parent_key_id,
 		use_test_nonce,
-		0,
+		is_invoice,
 	);
 
 	context.fee = fee;
+	context.amount = slate.amount;
 
 	// Store our private identifiers for each input
 	for input in inputs {
@@ -104,13 +113,119 @@ where
 	Ok(context)
 }
 
+pub fn build_send_token_tx<'a, T: ?Sized, C, K>(
+	wallet: &mut T,
+	keychain: &K,
+	keychain_mask: Option<&SecretKey>,
+	slate: &mut Slate,
+	current_height: u64,
+	minimum_confirmations: u64,
+	max_outputs: usize,
+	change_outputs: usize,
+	selection_strategy_is_use_all: bool,
+	parent_key_id: Identifier,
+	is_invoice: bool,
+	use_test_nonce: bool,
+) -> Result<Context, Error>
+where
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	if slate.token_type.is_none() {
+		return Err(ErrorKind::GenericError(
+			"token type should not be none".to_owned(),
+		))?;
+	}
+
+	//TODO: Revise HF3. If we're sending V4 slates, only include
+	// change outputs in excess sum
+	let include_inputs_in_sum = !slate.is_compact();
+
+	let (mut token_elems, token_inputs, token_change_amounts_derivations) = select_send_token_tx(
+		wallet,
+		keychain_mask,
+		slate.amount,
+		slate.token_type.clone().unwrap().as_str(),
+		current_height,
+		minimum_confirmations,
+		max_outputs,
+		change_outputs,
+		selection_strategy_is_use_all,
+		&parent_key_id,
+		include_inputs_in_sum,
+	)?;
+
+	let token_output_len = token_change_amounts_derivations.len() + 1;
+	let token_inout_len = token_elems.len() - token_change_amounts_derivations.len();
+
+	let (mut elems, inputs, change_amounts_derivations, fee) = select_send_tx(
+		wallet,
+		keychain_mask,
+		0,
+		current_height,
+		minimum_confirmations,
+		max_outputs,
+		1,
+		selection_strategy_is_use_all,
+		&parent_key_id,
+		token_inout_len,
+		token_output_len,
+		include_inputs_in_sum,
+	)?;
+
+	let mut all_elems = vec![];
+	all_elems.append(&mut token_elems);
+	all_elems.append(&mut elems);
+
+	slate.fee = fee;
+	let (blinding, token_blinding) =
+		slate.add_transaction_elements(keychain, &ProofBuilder::new(keychain), all_elems)?;
+
+	// Create our own private context
+	let mut context = Context::new(
+		keychain.secp(),
+		blinding.secret_key(&keychain.secp()).unwrap(),
+		token_blinding.secret_key(&keychain.secp()).unwrap(),
+		&parent_key_id,
+		use_test_nonce,
+		is_invoice,
+	);
+
+	context.fee = fee;
+
+	// Store our private identifiers for each input
+	for input in inputs {
+		context.add_input(&input.key_id, &input.mmr_index, input.value);
+	}
+
+	// Store change output(s) and cached commits
+	for (change_amount, id, mmr_index) in &change_amounts_derivations {
+		context.add_output(&id, &mmr_index, *change_amount);
+	}
+
+	// Store our private identifiers for each token input
+	for input in token_inputs {
+		context.add_token_input(&input.key_id, &input.mmr_index, input.value);
+	}
+
+	// Store change token output(s) and cached commits
+	for (change_amount, id, mmr_index) in &token_change_amounts_derivations {
+		context.add_token_output(&id, &mmr_index, *change_amount);
+	}
+
+	Ok(context)
+}
+
 /// Locks all corresponding outputs in the context, creates
 /// change outputs and tx log entry
 pub fn lock_tx_context<'a, T: ?Sized, C, K>(
 	wallet: &mut T,
 	keychain_mask: Option<&SecretKey>,
 	slate: &Slate,
+	current_height: u64,
 	context: &Context,
+	excess_override: Option<pedersen::Commitment>,
 ) -> Result<(), Error>
 where
 	T: WalletBackend<'a, C, K>,
@@ -154,9 +269,8 @@ where
 
 		let lock_inputs = context.get_inputs().clone();
 		let lock_token_inputs = context.get_token_inputs().clone();
-		let messages = Some(slate.participant_messages());
 		let slate_id = slate.id;
-		let height = slate.height;
+		let height = current_height;
 		let parent_key_id = context.parent_key_id.clone();
 		let mut batch = wallet.batch(keychain_mask)?;
 		let log_id = batch.next_tx_log_id(&parent_key_id)?;
@@ -170,13 +284,19 @@ where
 		t.token_type = slate.token_type.clone().unwrap();
 		let filename = format!("{}.vcashtx", slate_id);
 		t.stored_tx = Some(filename);
-		t.fee = Some(slate.fee);
-		t.ttl_cutoff_height = slate.ttl_cutoff_height;
+		t.fee = Some(context.fee);
+		t.ttl_cutoff_height = match slate.ttl_cutoff_height {
+			0 => None,
+			n => Some(n),
+		};
 
-		if let Ok(e) = slate.calc_excess(&keychain) {
+		if let Ok(e) = slate.calc_excess(keychain.secp()) {
 			t.kernel_excess = Some(e)
 		}
-		t.kernel_lookup_min_height = Some(slate.height);
+		if let Some(e) = excess_override {
+			t.kernel_excess = Some(e)
+		}
+		t.kernel_lookup_min_height = Some(current_height);
 
 		let mut amount_debited = 0;
 		t.num_inputs = lock_inputs.len();
@@ -197,8 +317,6 @@ where
 			batch.lock_token_output(&mut coin)?;
 		}
 		t.token_amount_debited = token_amount_debited;
-
-		t.messages = messages;
 
 		// store extra payment proof info, if required
 		if let Some(ref p) = slate.payment_proof {
@@ -270,9 +388,8 @@ where
 		batch.commit()?;
 	} else {
 		let lock_inputs = context.get_inputs().clone();
-		let messages = Some(slate.participant_messages());
 		let slate_id = slate.id;
-		let height = slate.height;
+		let height = current_height;
 		let parent_key_id = context.parent_key_id.clone();
 		let mut batch = wallet.batch(keychain_mask)?;
 		let log_id = batch.next_tx_log_id(&parent_key_id)?;
@@ -280,13 +397,19 @@ where
 		t.tx_slate_id = Some(slate_id);
 		let filename = format!("{}.vcashtx", slate_id);
 		t.stored_tx = Some(filename);
-		t.fee = Some(slate.fee);
-		t.ttl_cutoff_height = slate.ttl_cutoff_height;
+		t.fee = Some(context.fee);
+		t.ttl_cutoff_height = match slate.ttl_cutoff_height {
+			0 => None,
+			n => Some(n),
+		};
 
-		if let Ok(e) = slate.calc_excess(&keychain) {
+		if let Ok(e) = slate.calc_excess(keychain.secp()) {
 			t.kernel_excess = Some(e)
 		}
-		t.kernel_lookup_min_height = Some(slate.height);
+		if let Some(e) = excess_override {
+			t.kernel_excess = Some(e)
+		}
+		t.kernel_lookup_min_height = Some(current_height);
 
 		let mut amount_debited = 0;
 		t.num_inputs = lock_inputs.len();
@@ -298,7 +421,6 @@ where
 		}
 
 		t.amount_debited = amount_debited;
-		t.messages = messages;
 
 		// store extra payment proof info, if required
 		if let Some(ref p) = slate.payment_proof {
@@ -360,9 +482,19 @@ pub fn build_recipient_output<'a, T: ?Sized, C, K>(
 	wallet: &mut T,
 	keychain_mask: Option<&SecretKey>,
 	slate: &mut Slate,
+	current_height: u64,
 	parent_key_id: Identifier,
+	is_invoice: bool,
 	use_test_rng: bool,
-) -> Result<(Identifier, Context), Error>
+) -> Result<
+	(
+		Identifier,
+		Context,
+		Option<TxLogEntry>,
+		Option<TokenTxLogEntry>,
+	),
+	Error,
+>
 where
 	T: WalletBackend<'a, C, K>,
 	C: NodeClient + 'a,
@@ -373,7 +505,7 @@ where
 	let keychain = wallet.keychain(keychain_mask)?;
 	let key_id_inner = key_id.clone();
 	let amount = slate.amount;
-	let height = slate.height;
+	let height = current_height;
 
 	let slate_id = slate.id;
 	let elem = if slate.token_type.clone().is_some() {
@@ -400,7 +532,7 @@ where
 			.unwrap(),
 		&parent_key_id,
 		use_test_rng,
-		1,
+		is_invoice,
 	);
 
 	if slate.token_type.clone().is_some() {
@@ -408,7 +540,8 @@ where
 	} else {
 		context.add_output(&key_id, &None, amount);
 	};
-	let messages = Some(slate.participant_messages());
+	context.amount = amount;
+	context.fee = slate.fee;
 	let commit = wallet.calc_commit_for_cache(keychain_mask, amount, &key_id_inner)?;
 	let mut batch = wallet.batch(keychain_mask)?;
 	let log_id = batch.next_tx_log_id(&parent_key_id)?;
@@ -422,13 +555,15 @@ where
 		t.token_type = slate.token_type.clone().unwrap();
 		t.token_amount_credited = amount;
 		t.num_token_outputs = 1;
-		t.messages = messages;
-		t.ttl_cutoff_height = slate.ttl_cutoff_height;
+		t.ttl_cutoff_height = match slate.ttl_cutoff_height {
+			0 => None,
+			n => Some(n),
+		};
 		// when invoicing, this will be invalid
-		if let Ok(e) = slate.calc_excess(&keychain) {
+		if let Ok(e) = slate.calc_excess(keychain.secp()) {
 			t.kernel_excess = Some(e)
 		}
-		t.kernel_lookup_min_height = Some(slate.height);
+		t.kernel_lookup_min_height = Some(current_height);
 		batch.save_token(TokenOutputData {
 			root_key_id: parent_key_id.clone(),
 			key_id: key_id_inner.clone(),
@@ -443,20 +578,24 @@ where
 			is_token_issue: false,
 			tx_log_entry: Some(log_id),
 		})?;
-		batch.save_token_tx_log_entry(t, &parent_key_id)?;
+		batch.save_token_tx_log_entry(t.clone(), &parent_key_id)?;
 		batch.commit()?;
+
+		Ok((key_id, context, None, Some(t)))
 	} else {
 		let mut t = TxLogEntry::new(parent_key_id.clone(), TxLogEntryType::TxReceived, log_id);
 		t.tx_slate_id = Some(slate_id);
 		t.amount_credited = amount;
 		t.num_outputs = 1;
-		t.messages = messages;
-		t.ttl_cutoff_height = slate.ttl_cutoff_height;
+		t.ttl_cutoff_height = match slate.ttl_cutoff_height {
+			0 => None,
+			n => Some(n),
+		};
 		// when invoicing, this will be invalid
-		if let Ok(e) = slate.calc_excess(&keychain) {
+		if let Ok(e) = slate.calc_excess(keychain.secp()) {
 			t.kernel_excess = Some(e)
 		}
-		t.kernel_lookup_min_height = Some(slate.height);
+		t.kernel_lookup_min_height = Some(current_height);
 		batch.save(OutputData {
 			root_key_id: parent_key_id.clone(),
 			key_id: key_id_inner.clone(),
@@ -470,11 +609,11 @@ where
 			is_coinbase: false,
 			tx_log_entry: Some(log_id),
 		})?;
-		batch.save_tx_log_entry(t, &parent_key_id)?;
+		batch.save_tx_log_entry(t.clone(), &parent_key_id)?;
 		batch.commit()?;
-	}
 
-	Ok((key_id, context))
+		Ok((key_id, context, Some(t), None))
+	}
 }
 
 /// Builds a transaction to send to someone from the HD seed associated with the
@@ -492,6 +631,7 @@ pub fn select_send_tx<'a, T: ?Sized, C, K, B>(
 	parent_key_id: &Identifier,
 	token_inputs: usize,
 	token_outputs: usize,
+	include_inputs_in_sum: bool,
 ) -> Result<
 	(
 		Vec<Box<build::Append<K, B>>>,
@@ -521,10 +661,72 @@ where
 	)?;
 
 	// build transaction skeleton with inputs and change
-	let (parts, change_amounts_derivations) =
-		inputs_and_change(&coins, wallet, keychain_mask, amount, fee, change_outputs)?;
+	let (parts, change_amounts_derivations) = inputs_and_change(
+		&coins,
+		wallet,
+		keychain_mask,
+		amount,
+		fee,
+		change_outputs,
+		include_inputs_in_sum,
+	)?;
 
 	Ok((parts, coins, change_amounts_derivations, fee))
+}
+
+/// Builds a transaction to send to someone from the HD seed associated with the
+/// wallet and the amount to send. Handles reading through the wallet data file,
+/// selecting outputs to spend and building the change.
+pub fn select_send_token_tx<'a, T: ?Sized, C, K, B>(
+	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
+	amount: u64,
+	token_type: &str,
+	current_height: u64,
+	minimum_confirmations: u64,
+	max_outputs: usize,
+	change_outputs: usize,
+	selection_strategy_is_use_all: bool,
+	parent_key_id: &Identifier,
+	include_inputs_in_sum: bool,
+) -> Result<
+	(
+		Vec<Box<build::Append<K, B>>>,
+		Vec<TokenOutputData>,
+		Vec<(u64, Identifier, Option<u64>)>, // change amounts and derivations
+	),
+	Error,
+>
+where
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+	B: ProofBuild,
+{
+	let (coins, _total, amount) = select_token_coins_and_fee(
+		wallet,
+		amount,
+		token_type,
+		current_height,
+		minimum_confirmations,
+		max_outputs,
+		selection_strategy_is_use_all,
+		&parent_key_id,
+	)?;
+
+	// build transaction skeleton with inputs and change
+	let token_type = TokenKey::from_hex(&token_type)?;
+	let (parts, change_amounts_derivations) = token_inputs_and_change(
+		&coins,
+		wallet,
+		keychain_mask,
+		amount,
+		token_type,
+		change_outputs,
+		include_inputs_in_sum,
+	)?;
+
+	Ok((parts, coins, change_amounts_derivations))
 }
 
 /// Select outputs and calculating fee.
@@ -668,6 +870,65 @@ where
 	Ok((coins, total, amount, fee))
 }
 
+/// Select outputs and calculating fee.
+pub fn select_token_coins_and_fee<'a, T: ?Sized, C, K>(
+	wallet: &mut T,
+	amount: u64,
+	token_type: &str,
+	current_height: u64,
+	minimum_confirmations: u64,
+	max_outputs: usize,
+	selection_strategy_is_use_all: bool,
+	parent_key_id: &Identifier,
+) -> Result<
+	(
+		Vec<TokenOutputData>,
+		u64, // total
+		u64, // amount
+	),
+	Error,
+>
+where
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	// select some spendable coins from the wallet
+	let (max_outputs, coins) = select_token_coins(
+		wallet,
+		amount,
+		token_type,
+		current_height,
+		minimum_confirmations,
+		max_outputs,
+		selection_strategy_is_use_all,
+		parent_key_id,
+	);
+
+	let total: u64 = coins.iter().map(|c| c.value).sum();
+
+	if total == 0 {
+		return Err(ErrorKind::NotEnoughFunds {
+			available: 0,
+			available_disp: amount_to_hr_string(0, false),
+			needed: amount as u64,
+			needed_disp: amount_to_hr_string(amount as u64, false),
+		})?;
+	}
+
+	// The amount with fee is more than the total values of our max outputs
+	if total < amount && coins.len() == max_outputs {
+		return Err(ErrorKind::NotEnoughFunds {
+			available: total,
+			available_disp: amount_to_hr_string(total, false),
+			needed: amount as u64,
+			needed_disp: amount_to_hr_string(amount as u64, false),
+		})?;
+	}
+
+	Ok((coins, total, amount))
+}
+
 /// Selects inputs and change for a transaction
 pub fn inputs_and_change<'a, T: ?Sized, C, K, B>(
 	coins: &[OutputData],
@@ -676,6 +937,7 @@ pub fn inputs_and_change<'a, T: ?Sized, C, K, B>(
 	amount: u64,
 	fee: u64,
 	num_change_outputs: usize,
+	include_inputs_in_sum: bool,
 ) -> Result<
 	(
 		Vec<Box<build::Append<K, B>>>,
@@ -700,11 +962,13 @@ where
 	let change = total - amount - fee;
 
 	// build inputs using the appropriate derived key_ids
-	for coin in coins {
-		if coin.is_coinbase {
-			parts.push(build::coinbase_input(coin.value, coin.key_id.clone()));
-		} else {
-			parts.push(build::input(coin.value, coin.key_id.clone()));
+	if include_inputs_in_sum {
+		for coin in coins {
+			if coin.is_coinbase {
+				parts.push(build::coinbase_input(coin.value, coin.key_id.clone()));
+			} else {
+				parts.push(build::input(coin.value, coin.key_id.clone()));
+			}
 		}
 	}
 
@@ -733,6 +997,86 @@ where
 
 			change_amounts_derivations.push((change_amount, change_key.clone(), None));
 			parts.push(build::output(change_amount, change_key));
+		}
+	}
+
+	Ok((parts, change_amounts_derivations))
+}
+
+/// Selects token inputs and change for a transaction
+pub fn token_inputs_and_change<'a, T: ?Sized, C, K, B>(
+	coins: &Vec<TokenOutputData>,
+	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
+	amount: u64,
+	token_type: TokenKey,
+	num_change_outputs: usize,
+	include_inputs_in_sum: bool,
+) -> Result<
+	(
+		Vec<Box<build::Append<K, B>>>,
+		Vec<(u64, Identifier, Option<u64>)>,
+	),
+	Error,
+>
+where
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+	B: ProofBuild,
+{
+	let mut parts = vec![];
+
+	// calculate the total across all inputs, and how much is left
+	let total: u64 = coins.iter().map(|c| c.value).sum();
+
+	// if we are spending 10,000 coins to send 1,000 then our change will be 9,000
+	// if the fee is 80 then the recipient will receive 1000 and our change will be
+	// 8,920
+	let change = total - amount;
+
+	// build inputs using the appropriate derived key_ids
+	if include_inputs_in_sum {
+		for coin in coins {
+			parts.push(build::build_token_input(
+				coin.value,
+				token_type,
+				coin.is_token_issue,
+				coin.key_id.clone(),
+			));
+		}
+	}
+
+	let mut change_amounts_derivations = vec![];
+
+	if change == 0 {
+		debug!("No Token change (sending exactly amount + fee), no change outputs to build");
+	} else {
+		debug!(
+			"Building Token change outputs: total change: {} ({} outputs)",
+			change, num_change_outputs
+		);
+
+		let part_change = change / num_change_outputs as u64;
+		let remainder_change = change % part_change;
+
+		for x in 0..num_change_outputs {
+			// n-1 equal change_outputs and a final one accounting for any remainder
+			let change_amount = if x == (num_change_outputs - 1) {
+				part_change + remainder_change
+			} else {
+				part_change
+			};
+
+			let change_key = wallet.next_child(keychain_mask).unwrap();
+
+			change_amounts_derivations.push((change_amount, change_key.clone(), None));
+			parts.push(build::token_output(
+				change_amount,
+				token_type,
+				false,
+				change_key,
+			));
 		}
 	}
 
@@ -843,6 +1187,7 @@ pub fn build_issue_token_tx<'a, T: ?Sized, C, K>(
 	keychain: &K,
 	keychain_mask: Option<&SecretKey>,
 	slate: &mut Slate,
+	current_height: u64,
 	minimum_confirmations: u64,
 	max_outputs: usize,
 	change_outputs: usize,
@@ -859,7 +1204,7 @@ where
 		wallet,
 		keychain_mask,
 		0,
-		slate.height,
+		current_height,
 		minimum_confirmations,
 		max_outputs,
 		change_outputs,
@@ -867,6 +1212,7 @@ where
 		&parent_key_id,
 		0,
 		1,
+		true,
 	)?;
 
 	let token_type = TokenKey::new_token_key();
@@ -891,7 +1237,7 @@ where
 		token_blinding.secret_key(&keychain.secp()).unwrap(),
 		&parent_key_id,
 		use_test_nonce,
-		0,
+		false,
 	);
 
 	context.fee = fee;
@@ -942,213 +1288,6 @@ where
 	));
 
 	Ok((parts, (amount, token_key.clone(), None)))
-}
-
-pub fn build_send_token_tx<'a, T: ?Sized, C, K>(
-	wallet: &mut T,
-	keychain: &K,
-	keychain_mask: Option<&SecretKey>,
-	slate: &mut Slate,
-	minimum_confirmations: u64,
-	max_outputs: usize,
-	change_outputs: usize,
-	selection_strategy_is_use_all: bool,
-	parent_key_id: Identifier,
-	use_test_nonce: bool,
-) -> Result<Context, Error>
-where
-	T: WalletBackend<'a, C, K>,
-	C: NodeClient + 'a,
-	K: Keychain + 'a,
-{
-	if slate.token_type.is_none() {
-		return Err(ErrorKind::GenericError(
-			"token type should not be none".to_owned(),
-		))?;
-	}
-	let (mut token_elems, token_inputs, token_change_amounts_derivations) = select_send_token_tx(
-		wallet,
-		keychain_mask,
-		slate.amount,
-		slate.token_type.clone().unwrap().as_str(),
-		slate.height,
-		minimum_confirmations,
-		max_outputs,
-		change_outputs,
-		selection_strategy_is_use_all,
-		&parent_key_id,
-	)?;
-
-	let token_output_len = token_change_amounts_derivations.len() + 1;
-	let token_inout_len = token_elems.len() - token_change_amounts_derivations.len();
-
-	let (mut elems, inputs, change_amounts_derivations, fee) = select_send_tx(
-		wallet,
-		keychain_mask,
-		0,
-		slate.height,
-		minimum_confirmations,
-		max_outputs,
-		1,
-		selection_strategy_is_use_all,
-		&parent_key_id,
-		token_inout_len,
-		token_output_len,
-	)?;
-
-	let mut all_elems = vec![];
-	all_elems.append(&mut token_elems);
-	all_elems.append(&mut elems);
-
-	slate.fee = fee;
-	let (blinding, token_blinding) =
-		slate.add_transaction_elements(keychain, &ProofBuilder::new(keychain), all_elems)?;
-
-	// Create our own private context
-	let mut context = Context::new(
-		keychain.secp(),
-		blinding.secret_key(&keychain.secp()).unwrap(),
-		token_blinding.secret_key(&keychain.secp()).unwrap(),
-		&parent_key_id,
-		use_test_nonce,
-		0,
-	);
-
-	context.fee = fee;
-
-	// Store our private identifiers for each input
-	for input in inputs {
-		context.add_input(&input.key_id, &input.mmr_index, input.value);
-	}
-
-	// Store change output(s) and cached commits
-	for (change_amount, id, mmr_index) in &change_amounts_derivations {
-		context.add_output(&id, &mmr_index, *change_amount);
-	}
-
-	// Store our private identifiers for each token input
-	for input in token_inputs {
-		context.add_token_input(&input.key_id, &input.mmr_index, input.value);
-	}
-
-	// Store change token output(s) and cached commits
-	for (change_amount, id, mmr_index) in &token_change_amounts_derivations {
-		context.add_token_output(&id, &mmr_index, *change_amount);
-	}
-
-	Ok(context)
-}
-
-/// Builds a transaction to send to someone from the HD seed associated with the
-/// wallet and the amount to send. Handles reading through the wallet data file,
-/// selecting outputs to spend and building the change.
-pub fn select_send_token_tx<'a, T: ?Sized, C, K, B>(
-	wallet: &mut T,
-	keychain_mask: Option<&SecretKey>,
-	amount: u64,
-	token_type: &str,
-	current_height: u64,
-	minimum_confirmations: u64,
-	max_outputs: usize,
-	change_outputs: usize,
-	selection_strategy_is_use_all: bool,
-	parent_key_id: &Identifier,
-) -> Result<
-	(
-		Vec<Box<build::Append<K, B>>>,
-		Vec<TokenOutputData>,
-		Vec<(u64, Identifier, Option<u64>)>, // change amounts and derivations
-	),
-	Error,
->
-where
-	T: WalletBackend<'a, C, K>,
-	C: NodeClient + 'a,
-	K: Keychain + 'a,
-	B: ProofBuild,
-{
-	let (coins, _total, amount) = select_token_coins_and_fee(
-		wallet,
-		amount,
-		token_type,
-		current_height,
-		minimum_confirmations,
-		max_outputs,
-		selection_strategy_is_use_all,
-		&parent_key_id,
-	)?;
-
-	// build transaction skeleton with inputs and change
-	let token_type = TokenKey::from_hex(&token_type)?;
-	let (parts, change_amounts_derivations) = token_inputs_and_change(
-		&coins,
-		wallet,
-		keychain_mask,
-		amount,
-		token_type,
-		change_outputs,
-	)?;
-
-	Ok((parts, coins, change_amounts_derivations))
-}
-
-/// Select outputs and calculating fee.
-pub fn select_token_coins_and_fee<'a, T: ?Sized, C, K>(
-	wallet: &mut T,
-	amount: u64,
-	token_type: &str,
-	current_height: u64,
-	minimum_confirmations: u64,
-	max_outputs: usize,
-	selection_strategy_is_use_all: bool,
-	parent_key_id: &Identifier,
-) -> Result<
-	(
-		Vec<TokenOutputData>,
-		u64, // total
-		u64, // amount
-	),
-	Error,
->
-where
-	T: WalletBackend<'a, C, K>,
-	C: NodeClient + 'a,
-	K: Keychain + 'a,
-{
-	// select some spendable coins from the wallet
-	let (max_outputs, coins) = select_token_coins(
-		wallet,
-		amount,
-		token_type,
-		current_height,
-		minimum_confirmations,
-		max_outputs,
-		selection_strategy_is_use_all,
-		parent_key_id,
-	);
-
-	let total: u64 = coins.iter().map(|c| c.value).sum();
-
-	if total == 0 {
-		return Err(ErrorKind::NotEnoughFunds {
-			available: 0,
-			available_disp: amount_to_hr_string(0, false),
-			needed: amount as u64,
-			needed_disp: amount_to_hr_string(amount as u64, false),
-		})?;
-	}
-
-	// The amount with fee is more than the total values of our max outputs
-	if total < amount && coins.len() == max_outputs {
-		return Err(ErrorKind::NotEnoughFunds {
-			available: total,
-			available_disp: amount_to_hr_string(total, false),
-			needed: amount as u64,
-			needed_disp: amount_to_hr_string(amount as u64, false),
-		})?;
-	}
-
-	Ok((coins, total, amount))
 }
 
 pub fn select_token_coins<'a, T: ?Sized, C, K>(
@@ -1223,83 +1362,6 @@ where
 	)
 }
 
-/// Selects token inputs and change for a transaction
-pub fn token_inputs_and_change<'a, T: ?Sized, C, K, B>(
-	coins: &Vec<TokenOutputData>,
-	wallet: &mut T,
-	keychain_mask: Option<&SecretKey>,
-	amount: u64,
-	token_type: TokenKey,
-	num_change_outputs: usize,
-) -> Result<
-	(
-		Vec<Box<build::Append<K, B>>>,
-		Vec<(u64, Identifier, Option<u64>)>,
-	),
-	Error,
->
-where
-	T: WalletBackend<'a, C, K>,
-	C: NodeClient + 'a,
-	K: Keychain + 'a,
-	B: ProofBuild,
-{
-	let mut parts = vec![];
-
-	// calculate the total across all inputs, and how much is left
-	let total: u64 = coins.iter().map(|c| c.value).sum();
-
-	// if we are spending 10,000 coins to send 1,000 then our change will be 9,000
-	// if the fee is 80 then the recipient will receive 1000 and our change will be
-	// 8,920
-	let change = total - amount;
-
-	// build inputs using the appropriate derived key_ids
-	for coin in coins {
-		parts.push(build::build_token_input(
-			coin.value,
-			token_type,
-			coin.is_token_issue,
-			coin.key_id.clone(),
-		));
-	}
-
-	let mut change_amounts_derivations = vec![];
-
-	if change == 0 {
-		debug!("No Token change (sending exactly amount + fee), no change outputs to build");
-	} else {
-		debug!(
-			"Building Token change outputs: total change: {} ({} outputs)",
-			change, num_change_outputs
-		);
-
-		let part_change = change / num_change_outputs as u64;
-		let remainder_change = change % part_change;
-
-		for x in 0..num_change_outputs {
-			// n-1 equal change_outputs and a final one accounting for any remainder
-			let change_amount = if x == (num_change_outputs - 1) {
-				part_change + remainder_change
-			} else {
-				part_change
-			};
-
-			let change_key = wallet.next_child(keychain_mask).unwrap();
-
-			change_amounts_derivations.push((change_amount, change_key.clone(), None));
-			parts.push(build::token_output(
-				change_amount,
-				token_type,
-				false,
-				change_key,
-			));
-		}
-	}
-
-	Ok((parts, change_amounts_derivations))
-}
-
 fn select_token_from(
 	amount: u64,
 	select_all: bool,
@@ -1326,4 +1388,76 @@ fn select_token_from(
 	} else {
 		None
 	}
+}
+
+/// Repopulates output in the slate's tranacstion
+/// with outputs from the stored context
+/// change outputs and tx log entry
+/// Remove the explicitly stored excess
+pub fn repopulate_tx<'a, T: ?Sized, C, K>(
+	wallet: &mut T,
+	keychain_mask: Option<&SecretKey>,
+	slate: &mut Slate,
+	context: &Context,
+	update_fee: bool,
+) -> Result<(), Error>
+where
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	// restore the original amount, fee
+	slate.amount = context.amount;
+	if update_fee {
+		slate.fee = context.fee;
+	}
+
+	let keychain = wallet.keychain(keychain_mask)?;
+
+	// restore my signature data
+	slate.add_participant_info(&keychain, &context.sec_key, &context.sec_nonce, None)?;
+
+	let mut parts = vec![];
+	for (id, _, value) in &context.get_inputs() {
+		let input = wallet.iter().find(|out| out.key_id == *id);
+		if let Some(i) = input {
+			if i.is_coinbase {
+				parts.push(build::coinbase_input(*value, i.key_id.clone()));
+			} else {
+				parts.push(build::input(*value, i.key_id.clone()));
+			}
+		}
+	}
+	for (id, _, value) in &context.get_outputs() {
+		let output = wallet.iter().find(|out| out.key_id == *id);
+		if let Some(i) = output {
+			parts.push(build::output(*value, i.key_id.clone()));
+		}
+	}
+	for (id, _, value) in &context.get_token_inputs() {
+		let output = wallet.token_iter().find(|out| out.key_id == *id);
+		if let Some(i) = output {
+			parts.push(build::token_input(
+				*value,
+				TokenKey::from_hex(slate.token_type.clone().unwrap().as_str())?,
+				false,
+				i.key_id.clone(),
+			));
+		}
+	}
+	for (id, _, value) in &context.get_token_outputs() {
+		let output = wallet.token_iter().find(|out| out.key_id == *id);
+		if let Some(i) = output {
+			parts.push(build::token_output(
+				*value,
+				TokenKey::from_hex(slate.token_type.clone().unwrap().as_str())?,
+				false,
+				i.key_id.clone(),
+			));
+		}
+	}
+	let _ = slate.add_transaction_elements(&keychain, &ProofBuilder::new(&keychain), parts)?;
+	// restore the original offset
+	slate.tx_or_err_mut()?.offset = slate.offset.clone();
+	Ok(())
 }

@@ -190,6 +190,10 @@ pub enum ErrorKind {
 	#[fail(display = "Committed Error")]
 	Committed(committed::Error),
 
+	/// Error from summing commitments
+	#[fail(display = "Committed Error: {}", _0)]
+	Commit(String),
+
 	/// Can't parse slate version
 	#[fail(display = "Can't parse slate version")]
 	SlateVersionParse,
@@ -201,6 +205,14 @@ pub enum ErrorKind {
 	/// Can't deserialize slate
 	#[fail(display = "Can't Deserialize slate")]
 	SlateDeser,
+
+	/// Can't serialize slate pack
+	#[fail(display = "Can't Serialize slatepack")]
+	SlatepackSer,
+
+	/// Can't deserialize slate
+	#[fail(display = "Can't Deserialize slatepack: {}", _0)]
+	SlatepackDeser(String),
 
 	/// Unknown slate version
 	#[fail(display = "Unknown Slate Version: {}", _0)]
@@ -265,6 +277,50 @@ pub enum ErrorKind {
 	/// Unreach Token Support Height
 	#[fail(display = "Can't deal token transaction util reach token support height")]
 	UnreachTokenSupportHeight,
+
+	/// Kernel features args don't exist
+	#[fail(display = "Kernel Features Arg {} missing", _0)]
+	KernelFeaturesMissing(String),
+
+	/// Kernel features args don't exist
+	#[fail(display = "Token Kernel Features Arg {} missing", _0)]
+	TokenKernelFeaturesMissing(String),
+
+	/// Unknown Kernel Feature
+	#[fail(display = "Unknown Kernel Feature: {}", _0)]
+	UnknownKernelFeatures(u8),
+
+	/// Unknown Token Kernel Feature
+	#[fail(display = "Unknown Token Kernel Feature: {}", _0)]
+	UnknownTokenKernelFeatures(u8),
+
+	/// Invalid Kernel Feature
+	#[fail(display = "Invalid Kernel Feature: {}", _0)]
+	InvalidKernelFeatures(u8),
+
+	/// Invalid Token Kernel Feature
+	#[fail(display = "Invalid Token Kernel Feature: {}", _0)]
+	InvalidTokenKernelFeatures(u8),
+
+	/// Invalid Slatepack Data
+	#[fail(display = "Invalid Slatepack Data: {}", _0)]
+	InvalidSlatepackData(String),
+
+	/// Slatepack Encryption
+	#[fail(display = "Couldn't encrypt Slatepack: {}", _0)]
+	SlatepackEncryption(String),
+
+	/// Slatepack Decryption
+	#[fail(display = "Couldn't decrypt Slatepack: {}", _0)]
+	SlatepackDecryption(String),
+
+	/// age error
+	#[fail(display = "Age error: {}", _0)]
+	Age(String),
+
+	/// Slatepack address parsing error
+	#[fail(display = "SlatepackAddress error: {}", _0)]
+	SlatepackAddress(String),
 
 	/// Other
 	#[fail(display = "Generic error: {}", _0)]
@@ -392,5 +448,21 @@ impl From<grin_store::Error> for Error {
 impl From<util::OnionV3AddressError> for Error {
 	fn from(error: util::OnionV3AddressError) -> Error {
 		Error::from(ErrorKind::OnionV3Address(error))
+	}
+}
+
+impl From<age::Error> for Error {
+	fn from(error: age::Error) -> Error {
+		Error {
+			inner: Context::new(ErrorKind::Age(format!("{}", error))),
+		}
+	}
+}
+
+impl From<bech32::Error> for Error {
+	fn from(error: bech32::Error) -> Error {
+		Error {
+			inner: Context::new(ErrorKind::SlatepackAddress(format!("{}", error))),
+		}
 	}
 }

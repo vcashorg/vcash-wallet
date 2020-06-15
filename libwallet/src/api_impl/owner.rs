@@ -20,29 +20,29 @@ use crate::grin_core::core::hash::Hashed;
 use crate::grin_core::core::Transaction;
 use crate::grin_util::secp::key::SecretKey;
 use crate::grin_util::Mutex;
-use crate::util::OnionV3Address;
+use crate::util::{OnionV3Address, OnionV3AddressError};
 
 use crate::api_impl::owner_updater::StatusMessage;
 use crate::grin_keychain::{Identifier, Keychain};
 use crate::internal::{keys, scan, selection, tx, updater};
-use crate::slate::{PaymentInfo, Slate};
+use crate::slate::{PaymentInfo, Slate, SlateState};
 use crate::types::{AcctPathMapping, NodeClient, TxLogEntry, WalletBackend, WalletInfo};
 use crate::{
 	address, wallet_lock, InitTxArgs, IssueInvoiceTxArgs, NodeHeightResult, OutputCommitMapping,
-	PaymentProof, ScannedBlockInfo, TxLogEntryType, WalletInitStatus, WalletInst, WalletLCProvider,
+	PaymentProof, ScannedBlockInfo, Slatepack, SlatepackAddress, Slatepacker, SlatepackerArgs,
+	TxLogEntryType, WalletInitStatus, WalletInst, WalletLCProvider,
 };
 use crate::{Error, ErrorKind};
 use ed25519_dalek::PublicKey as DalekPublicKey;
 use ed25519_dalek::SecretKey as DalekSecretKey;
 
+use std::convert::TryFrom;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 use crate::internal::token_scan;
 use crate::types::{TokenTxLogEntry, TokenTxLogEntryType};
 use crate::{IssueTokenArgs, TokenOutputCommitMapping};
-
-const USER_MESSAGE_MAX_LEN: usize = 256;
 
 /// List of accounts
 pub fn accounts<'a, T: ?Sized, C, K>(w: &mut T) -> Result<Vec<AcctPathMapping>, Error>
@@ -78,14 +78,14 @@ where
 	w.set_parent_key_id_by_name(label)
 }
 
-/// Retrieve the payment proof address for the current parent key at
+/// Retrieve the slatepack address for the current parent key at
 /// the given index
 /// set active account
-pub fn get_public_proof_address<'a, L, C, K>(
+pub fn get_slatepack_address<'a, L, C, K>(
 	wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
 	keychain_mask: Option<&SecretKey>,
 	index: u32,
-) -> Result<DalekPublicKey, Error>
+) -> Result<SlatepackAddress, Error>
 where
 	L: WalletLCProvider<'a, C, K>,
 	C: NodeClient + 'a,
@@ -95,8 +95,123 @@ where
 	let parent_key_id = w.parent_key_id();
 	let k = w.keychain(keychain_mask)?;
 	let sec_addr_key = address::address_from_derivation_path(&k, &parent_key_id, index)?;
-	let addr = OnionV3Address::from_private(&sec_addr_key.0)?;
-	Ok(addr.to_ed25519()?)
+	SlatepackAddress::try_from(&sec_addr_key)
+}
+
+/// Retrieve the decryption key for the current parent key
+/// the given index
+/// set active account
+pub fn get_slatepack_secret_key<'a, L, C, K>(
+	wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
+	keychain_mask: Option<&SecretKey>,
+	index: u32,
+) -> Result<DalekSecretKey, Error>
+where
+	L: WalletLCProvider<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	wallet_lock!(wallet_inst, w);
+	let parent_key_id = w.parent_key_id();
+	let k = w.keychain(keychain_mask)?;
+	let sec_addr_key = address::address_from_derivation_path(&k, &parent_key_id, index)?;
+	let d_skey = match DalekSecretKey::from_bytes(&sec_addr_key.0) {
+		Ok(k) => k,
+		Err(e) => {
+			return Err(OnionV3AddressError::InvalidPrivateKey(format!(
+				"Unable to create secret key: {}",
+				e
+			))
+			.into());
+		}
+	};
+	Ok(d_skey)
+}
+
+/// Create a slatepack message from the given slate
+pub fn create_slatepack_message<'a, L, C, K>(
+	wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
+	keychain_mask: Option<&SecretKey>,
+	slate: &Slate,
+	sender_index: Option<u32>,
+	recipients: Vec<SlatepackAddress>,
+) -> Result<String, Error>
+where
+	L: WalletLCProvider<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	let sender = match sender_index {
+		Some(i) => Some(get_slatepack_address(wallet_inst, keychain_mask, i)?),
+		None => None,
+	};
+	let packer = Slatepacker::new(SlatepackerArgs {
+		sender,
+		recipients,
+		dec_key: None,
+	});
+	let slatepack = packer.create_slatepack(slate)?;
+	packer.armor_slatepack(&slatepack)
+}
+
+/// Unpack a slate from the given slatepack message,
+/// optionally decrypting
+pub fn slate_from_slatepack_message<'a, L, C, K>(
+	wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
+	keychain_mask: Option<&SecretKey>,
+	slatepack: String,
+	secret_indices: Vec<u32>,
+) -> Result<Slate, Error>
+where
+	L: WalletLCProvider<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	if secret_indices.is_empty() {
+		let packer = Slatepacker::new(SlatepackerArgs {
+			sender: None,
+			recipients: vec![],
+			dec_key: None,
+		});
+		let slatepack = packer.deser_slatepack(slatepack.as_bytes().to_vec(), true)?;
+		return packer.get_slate(&slatepack);
+	} else {
+		for index in secret_indices {
+			let dec_key = Some(get_slatepack_secret_key(
+				wallet_inst.clone(),
+				keychain_mask,
+				index,
+			)?);
+			let packer = Slatepacker::new(SlatepackerArgs {
+				sender: None,
+				recipients: vec![],
+				dec_key: (&dec_key).as_ref(),
+			});
+			let res = packer.deser_slatepack(slatepack.as_bytes().to_vec(), true);
+			let slatepack = match res {
+				Ok(sp) => sp,
+				Err(_) => {
+					continue;
+				}
+			};
+			return packer.get_slate(&slatepack);
+		}
+		return Err(ErrorKind::SlatepackDecryption(
+			"Could not decrypt slatepack with any provided index on the address derivation path"
+				.into(),
+		)
+		.into());
+	}
+}
+
+/// Decode a slatepack message, to allow viewing
+pub fn decode_slatepack_message(slatepack: String, decrypt: bool) -> Result<Slatepack, Error> {
+	let packer = Slatepacker::new(SlatepackerArgs {
+		sender: None,
+		recipients: vec![],
+		dec_key: None,
+	});
+	packer.deser_slatepack(slatepack.as_bytes().to_vec(), decrypt)
 }
 
 /// retrieve outputs
@@ -297,12 +412,14 @@ where
 		None => w.parent_key_id(),
 	};
 
-	let mut slate = tx::new_tx_slate(&mut *w, args.amount, None, 2, use_test_rng, None)?;
+	let mut slate = tx::new_tx_slate(&mut *w, args.amount, None, false, 2, use_test_rng, None)?;
 
+	let height = w.w2n_client().get_chain_tip()?.0;
 	let context = tx::fill_tx_to_slate(
 		&mut *w,
 		keychain_mask,
 		&mut slate,
+		height,
 		1,
 		1,
 		1,
@@ -311,7 +428,7 @@ where
 		use_test_rng,
 	)?;
 
-	selection::lock_tx_context(&mut *w, keychain_mask, &slate, &context)?;
+	selection::lock_tx_context(&mut *w, keychain_mask, &slate, height, &context, None)?;
 	Ok(slate)
 }
 
@@ -417,9 +534,9 @@ where
 			token_type: None,
 			amount: amount,
 			excess: excess,
-			recipient_address: OnionV3Address::from_bytes(proof.receiver_address.to_bytes()),
+			recipient_address: SlatepackAddress::new(&proof.receiver_address),
 			recipient_sig: r_sig,
-			sender_address: OnionV3Address::from_bytes(proof.sender_address.to_bytes()),
+			sender_address: SlatepackAddress::new(&proof.sender_address),
 			sender_sig: s_sig,
 		})
 	} else {
@@ -470,9 +587,9 @@ where
 			token_type: Some(tx.token_type),
 			amount: amount,
 			excess: excess,
-			recipient_address: OnionV3Address::from_bytes(proof.receiver_address.to_bytes()),
+			recipient_address: SlatepackAddress::new(&proof.receiver_address),
 			recipient_sig: r_sig,
-			sender_address: OnionV3Address::from_bytes(proof.sender_address.to_bytes()),
+			sender_address: SlatepackAddress::new(&proof.sender_address),
 			sender_sig: s_sig,
 		})
 	}
@@ -501,22 +618,19 @@ where
 		None => w.parent_key_id(),
 	};
 
-	let message = match args.message {
-		Some(mut m) => {
-			m.truncate(USER_MESSAGE_MAX_LEN);
-			Some(m)
-		}
-		None => None,
-	};
-
 	let mut slate = tx::new_tx_slate(
 		&mut *w,
 		args.amount,
 		args.token_type,
+		false,
 		2,
 		use_test_rng,
 		args.ttl_blocks,
 	)?;
+
+	if let Some(v) = args.target_slate_version {
+		slate.version_info.version = v;
+	};
 
 	// if we just want to estimate, don't save a context, just send the results
 	// back
@@ -536,17 +650,17 @@ where
 		return Ok(slate);
 	}
 
+	let height = w.w2n_client().get_chain_tip()?.0;
 	let mut context = tx::add_inputs_to_slate(
 		&mut *w,
 		keychain_mask,
 		&mut slate,
+		height,
 		args.minimum_confirmations,
 		args.max_outputs as usize,
 		args.num_change_outputs as usize,
 		args.selection_strategy_is_use_all,
 		&parent_key_id,
-		0,
-		message,
 		true,
 		use_test_rng,
 	)?;
@@ -564,7 +678,7 @@ where
 
 		slate.payment_proof = Some(PaymentInfo {
 			sender_address: sender_address.to_ed25519()?,
-			receiver_address: a.to_ed25519()?,
+			receiver_address: a.pub_key,
 			receiver_signature: None,
 		});
 
@@ -575,11 +689,12 @@ where
 	// recieve the transaction back
 	{
 		let mut batch = w.batch(keychain_mask)?;
-		batch.save_private_context(slate.id.as_bytes(), 0, &context)?;
+		batch.save_private_context(slate.id.as_bytes(), &context)?;
 		batch.commit()?;
 	}
-	if let Some(v) = args.target_slate_version {
-		slate.version_info.orig_version = v;
+
+	if slate.is_compact() {
+		slate.compact()?;
 	}
 
 	Ok(slate)
@@ -608,36 +723,40 @@ where
 		None => w.parent_key_id(),
 	};
 
-	let message = match args.message {
-		Some(mut m) => {
-			m.truncate(USER_MESSAGE_MAX_LEN);
-			Some(m)
-		}
-		None => None,
-	};
-
-	let mut slate = tx::new_tx_slate(&mut *w, args.amount, args.token_type, 2, use_test_rng, None)?;
+	let mut slate = tx::new_tx_slate(
+		&mut *w,
+		args.amount,
+		args.token_type,
+		true,
+		2,
+		use_test_rng,
+		None,
+	)?;
+	let height = w.w2n_client().get_chain_tip()?.0;
 	let context = tx::add_output_to_slate(
 		&mut *w,
 		keychain_mask,
 		&mut slate,
+		height,
 		&parent_key_id,
-		1,
-		message,
 		true,
 		use_test_rng,
 	)?;
+
+	if let Some(v) = args.target_slate_version {
+		slate.version_info.version = v;
+	};
 
 	// Save the aggsig context in our DB for when we
 	// recieve the transaction back
 	{
 		let mut batch = w.batch(keychain_mask)?;
-		batch.save_private_context(slate.id.as_bytes(), 1, &context)?;
+		batch.save_private_context(slate.id.as_bytes(), &context)?;
 		batch.commit()?;
 	}
 
-	if let Some(v) = args.target_slate_version {
-		slate.version_info.orig_version = v;
+	if slate.is_compact() {
+		slate.compact()?;
 	}
 
 	Ok(slate)
@@ -698,49 +817,77 @@ where
 		}
 	}
 
-	let message = match args.message {
-		Some(mut m) => {
-			m.truncate(USER_MESSAGE_MAX_LEN);
-			Some(m)
-		}
-		None => None,
-	};
-
-	// update slate current height
-	ret_slate.height = w.w2n_client().get_chain_tip()?.0;
+	let height = w.w2n_client().get_chain_tip()?.0;
 
 	// update ttl if desired
 	if let Some(b) = args.ttl_blocks {
-		ret_slate.ttl_cutoff_height = Some(ret_slate.height + b);
+		ret_slate.ttl_cutoff_height = height + b;
 	}
 
-	let context = tx::add_inputs_to_slate(
+	// if this is compact mode, we need to create the transaction now
+	if ret_slate.is_compact() {
+		ret_slate.tx = Some(Transaction::empty());
+	}
+
+	// if self sending, make sure to store 'initiator' keys
+	let context_res = w.get_private_context(keychain_mask, slate.id.as_bytes());
+
+	let mut context = tx::add_inputs_to_slate(
 		&mut *w,
 		keychain_mask,
 		&mut ret_slate,
+		height,
 		args.minimum_confirmations,
 		args.max_outputs as usize,
 		args.num_change_outputs as usize,
 		args.selection_strategy_is_use_all,
 		&parent_key_id,
-		0,
-		message,
 		false,
 		use_test_rng,
 	)?;
+
+	let keychain = w.keychain(keychain_mask)?;
+	// needs to be stored as we're removing sig data for return trip. this needs to be present
+	// when locking transaction context and updating tx log with excess later
+	context.calculated_excess = Some(ret_slate.calc_excess(keychain.secp())?);
+
+	// if self-sending, merge contexts
+	if let Ok(c) = context_res {
+		context.initial_sec_key = c.initial_sec_key;
+		context.initial_sec_nonce = c.initial_sec_nonce;
+		context.is_invoice = c.is_invoice;
+		context.fee = c.fee;
+		context.amount = c.amount;
+		for o in c.output_ids.iter() {
+			context.output_ids.push(o.clone());
+		}
+		for i in c.input_ids.iter() {
+			context.input_ids.push(i.clone());
+		}
+	}
+
+	// adjust offset with inputs, repopulate inputs (initiator needs them for now)
+	// TODO: Revisit post-HF3
+	if ret_slate.is_compact() {
+		tx::sub_inputs_from_offset(&mut *w, keychain_mask, &context, &mut ret_slate)?;
+		selection::repopulate_tx(&mut *w, keychain_mask, &mut ret_slate, &context, false)?;
+	}
 
 	// Save the aggsig context in our DB for when we
 	// recieve the transaction back
 	{
 		let mut batch = w.batch(keychain_mask)?;
-		batch.save_private_context(slate.id.as_bytes(), 0, &context)?;
+		batch.save_private_context(slate.id.as_bytes(), &context)?;
 		batch.commit()?;
 	}
 
-	if let Some(v) = args.target_slate_version {
-		ret_slate.version_info.orig_version = v;
+	// Can remove amount as well as other sig data now
+	if ret_slate.is_compact() {
+		ret_slate.amount = 0;
+		ret_slate.remove_other_sigdata(&keychain, &context.sec_nonce, &context.sec_key)?;
 	}
 
+	ret_slate.state = SlateState::Invoice2;
 	Ok(ret_slate)
 }
 
@@ -749,15 +896,32 @@ pub fn tx_lock_outputs<'a, T: ?Sized, C, K>(
 	w: &mut T,
 	keychain_mask: Option<&SecretKey>,
 	slate: &Slate,
-	participant_id: usize,
 ) -> Result<(), Error>
 where
 	T: WalletBackend<'a, C, K>,
 	C: NodeClient + 'a,
 	K: Keychain + 'a,
 {
-	let context = w.get_private_context(keychain_mask, slate.id.as_bytes(), participant_id)?;
-	selection::lock_tx_context(&mut *w, keychain_mask, slate, &context)
+	let context = w.get_private_context(keychain_mask, slate.id.as_bytes())?;
+	let mut sl = slate.clone();
+	let mut excess_override = None;
+	if sl.is_compact() && sl.tx == None {
+		// attempt to repopulate if we're the initiator
+		sl.tx = Some(Transaction::empty());
+		selection::repopulate_tx(&mut *w, keychain_mask, &mut sl, &context, true)?;
+	} else if sl.participant_data.len() == 1 {
+		// purely for invoice workflow, payer needs the excess back temporarily for storage
+		excess_override = context.calculated_excess;
+	}
+	let height = w.w2n_client().get_chain_tip()?.0;
+	selection::lock_tx_context(
+		&mut *w,
+		keychain_mask,
+		&sl,
+		height,
+		&context,
+		excess_override,
+	)
 }
 
 /// Finalize slate
@@ -773,16 +937,31 @@ where
 {
 	let mut sl = slate.clone();
 	check_ttl(w, &sl)?;
-	let context = w.get_private_context(keychain_mask, sl.id.as_bytes(), 0)?;
+	let context = w.get_private_context(keychain_mask, sl.id.as_bytes())?;
 	let parent_key_id = w.parent_key_id();
-	tx::complete_tx(&mut *w, keychain_mask, &mut sl, 0, &context)?;
+
+	// since we're now actually inserting our inputs, pick an offset and adjust
+	// our contribution to the excess by offset amount
+	// TODO: Post HF3, this should allow for inputs to be picked at this stage
+	// as opposed to locking them prior to this stage, as the excess to this point
+	// will just be the change output
+
+	if sl.is_compact() {
+		tx::sub_inputs_from_offset(&mut *w, keychain_mask, &context, &mut sl)?;
+		selection::repopulate_tx(&mut *w, keychain_mask, &mut sl, &context, true)?;
+	}
+
+	tx::complete_tx(&mut *w, keychain_mask, &mut sl, &context)?;
 	tx::verify_slate_payment_proof(&mut *w, keychain_mask, &parent_key_id, &context, &sl)?;
 	tx::update_stored_tx(&mut *w, keychain_mask, &context, &sl, false)?;
-	tx::update_message(&mut *w, keychain_mask, &sl)?;
 	{
 		let mut batch = w.batch(keychain_mask)?;
-		batch.delete_private_context(sl.id.as_bytes(), 0)?;
+		batch.delete_private_context(sl.id.as_bytes())?;
 		batch.commit()?;
+	}
+	sl.state = SlateState::Standard3;
+	if sl.is_compact() {
+		sl.amount = 0;
 	}
 	Ok(sl)
 }
@@ -817,29 +996,13 @@ where
 }
 
 /// get stored tx
-pub fn get_stored_tx<'a, T: ?Sized, C, K>(
-	w: &T,
-	entry: &TxLogEntry,
-) -> Result<Option<Transaction>, Error>
+pub fn get_stored_tx<'a, T: ?Sized, C, K>(w: &T, id: &Uuid) -> Result<Option<Transaction>, Error>
 where
 	T: WalletBackend<'a, C, K>,
 	C: NodeClient + 'a,
 	K: Keychain + 'a,
 {
-	w.get_stored_tx(entry)
-}
-
-/// get stored tx
-pub fn get_stored_token_tx<'a, T: ?Sized, C, K>(
-	w: &T,
-	entry: &TokenTxLogEntry,
-) -> Result<Option<Transaction>, Error>
-where
-	T: WalletBackend<'a, C, K>,
-	C: NodeClient + 'a,
-	K: Keychain + 'a,
-{
-	w.get_stored_token_tx(entry)
+	w.get_stored_tx(&format!("{}", id))
 }
 
 /// Posts a transaction to the chain
@@ -860,11 +1023,6 @@ where
 		);
 		Ok(())
 	}
-}
-
-/// verify slate messages
-pub fn verify_slate_messages(slate: &Slate) -> Result<(), Error> {
-	slate.verify_messages()
 }
 
 /// check repair
@@ -954,6 +1112,26 @@ where
 		}
 	}
 }
+
+/// return whether slate was an invoice tx
+pub fn context_is_invoice<'a, L, C, K>(
+	wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
+	keychain_mask: Option<&SecretKey>,
+	slate: &Slate,
+) -> Result<bool, Error>
+where
+	L: WalletLCProvider<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	let context = {
+		wallet_lock!(wallet_inst, w);
+		let context = w.get_private_context(keychain_mask, slate.id.as_bytes())?;
+		context
+	};
+	Ok(context.is_invoice)
+}
+
 /// Experimental, wrap the entire definition of how a wallet's state is updated
 pub fn update_wallet_state<'a, L, C, K>(
 	wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
@@ -1127,8 +1305,8 @@ where
 {
 	// Refuse if TTL is expired
 	let last_confirmed_height = w.last_confirmed_height()?;
-	if let Some(e) = slate.ttl_cutoff_height {
-		if last_confirmed_height >= e {
+	if slate.ttl_cutoff_height != 0 {
+		if last_confirmed_height >= slate.ttl_cutoff_height {
 			return Err(ErrorKind::TransactionExpired.into());
 		}
 	}
@@ -1147,7 +1325,7 @@ where
 	C: NodeClient + 'a,
 	K: Keychain + 'a,
 {
-	let sender_pubkey = proof.sender_address.to_ed25519()?;
+	let sender_pubkey = proof.sender_address.pub_key;
 	let msg = tx::payment_proof_message(
 		proof.token_type.clone(),
 		proof.amount,
@@ -1204,12 +1382,12 @@ where
 	}
 
 	// Check Sigs
-	let recipient_pubkey = proof.recipient_address.to_ed25519()?;
+	let recipient_pubkey = proof.recipient_address.pub_key;
 	if recipient_pubkey.verify(&msg, &proof.recipient_sig).is_err() {
 		return Err(ErrorKind::PaymentProof("Invalid recipient signature".to_owned()).into());
 	};
 
-	let sender_pubkey = proof.sender_address.to_ed25519()?;
+	let sender_pubkey = proof.sender_address.pub_key;
 	if sender_pubkey.verify(&msg, &proof.sender_sig).is_err() {
 		return Err(ErrorKind::PaymentProof("Invalid sender signature".to_owned()).into());
 	};

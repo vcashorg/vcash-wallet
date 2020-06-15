@@ -1,4 +1,4 @@
-// Copyright 2019 The Grin Developers
+// Copyright 2020 The Grin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ use crate::libwallet::{
 	AcctPathMapping, Error, OutputCommitMapping, OutputStatus, TxLogEntry, WalletInfo,
 };
 use crate::libwallet::{TokenOutputCommitMapping, TokenTxLogEntry};
-use crate::util;
+use crate::util::ToHex;
 use grin_wallet_util::OnionV3Address;
 use prettytable;
 use std::io::prelude::Write;
@@ -61,7 +61,7 @@ pub fn outputs(
 	]);
 
 	for m in outputs {
-		let commit = format!("{}", util::to_hex(m.commit.as_ref().to_vec()));
+		let commit = format!("{}", m.commit.as_ref().to_hex());
 		let index = match m.output.mmr_index {
 			None => "None".to_owned(),
 			Some(t) => t.to_string(),
@@ -162,7 +162,7 @@ pub fn token_outputs(
 	]);
 
 	for m in outputs {
-		let commit = format!("{}", util::to_hex(m.commit.as_ref().to_vec()));
+		let commit = format!("{}", m.commit.as_ref().to_hex());
 		let index = match m.output.mmr_index {
 			None => "None".to_owned(),
 			Some(t) => t.to_string(),
@@ -307,7 +307,10 @@ pub fn txs(
 			None => "None".to_owned(),
 		};
 		let kernel_excess = match t.kernel_excess {
-			Some(e) => util::to_hex(e.0.to_vec()),
+			Some(e) => {
+				let excess: &[u8] = e.0.as_ref();
+				excess.to_hex()
+			}
 			None => "None".to_owned(),
 		};
 		let payment_proof = match t.payment_proof {
@@ -480,7 +483,10 @@ pub fn token_txs(
 			None => "None".to_owned(),
 		};
 		let kernel_excess = match t.token_kernel_excess {
-			Some(e) => util::to_hex(e.0.to_vec()),
+			Some(e) => {
+				let excess: &[u8] = e.0.as_ref();
+				excess.to_hex()
+			}
 			None => "None".to_owned(),
 		};
 		let payment_proof = match t.payment_proof {
@@ -782,165 +788,6 @@ pub fn accounts(acct_mappings: Vec<AcctPathMapping>) {
 	println!();
 }
 
-/// Display transaction log messages
-pub fn tx_messages(tx: &TxLogEntry, dark_background_color_scheme: bool) -> Result<(), Error> {
-	let title = format!("Transaction Messages - Transaction '{}'", tx.id,);
-	println!();
-	if term::stdout().is_none() {
-		println!("Could not open terminal");
-		return Ok(());
-	}
-	let mut t = term::stdout().unwrap();
-	t.fg(term::color::MAGENTA).unwrap();
-	writeln!(t, "{}", title).unwrap();
-	t.reset().unwrap();
-
-	let msgs = match tx.messages.clone() {
-		None => {
-			writeln!(t, "None").unwrap();
-			t.reset().unwrap();
-			return Ok(());
-		}
-		Some(m) => m.clone(),
-	};
-
-	if msgs.messages.is_empty() {
-		writeln!(t, "None").unwrap();
-		t.reset().unwrap();
-		return Ok(());
-	}
-
-	let mut table = table!();
-
-	table.set_titles(row![
-		bMG->"Participant Id",
-		bMG->"Message",
-		bMG->"Public Key",
-		bMG->"Signature",
-	]);
-
-	let secp = util::static_secp_instance();
-	let secp_lock = secp.lock();
-
-	for m in msgs.messages {
-		let id = format!("{}", m.id);
-		let public_key = format!(
-			"{}",
-			util::to_hex(m.public_key.serialize_vec(&secp_lock, true).to_vec())
-		);
-		let message = match m.message {
-			Some(m) => format!("{}", m),
-			None => "None".to_owned(),
-		};
-		let message_sig = match m.message_sig {
-			Some(s) => format!("{}", util::to_hex(s.serialize_der(&secp_lock))),
-			None => "None".to_owned(),
-		};
-		if dark_background_color_scheme {
-			table.add_row(row![
-				bFC->id,
-				bFC->message,
-				bFC->public_key,
-				bFB->message_sig,
-			]);
-		} else {
-			table.add_row(row![
-				bFD->id,
-				bFb->message,
-				bFD->public_key,
-				bFB->message_sig,
-			]);
-		}
-	}
-
-	table.set_format(*prettytable::format::consts::FORMAT_NO_COLSEP);
-	table.printstd();
-	println!();
-
-	Ok(())
-}
-
-/// Display token transaction log messages
-pub fn token_tx_messages(
-	tx: &TokenTxLogEntry,
-	dark_background_color_scheme: bool,
-) -> Result<(), Error> {
-	let title = format!("Token Transaction Messages - Transaction '{}'", tx.id,);
-	println!();
-	if term::stdout().is_none() {
-		println!("Could not open terminal");
-		return Ok(());
-	}
-	let mut t = term::stdout().unwrap();
-	t.fg(term::color::MAGENTA).unwrap();
-	writeln!(t, "{}", title).unwrap();
-	t.reset().unwrap();
-
-	let msgs = match tx.messages.clone() {
-		None => {
-			writeln!(t, "{}", "None").unwrap();
-			t.reset().unwrap();
-			return Ok(());
-		}
-		Some(m) => m.clone(),
-	};
-
-	if msgs.messages.is_empty() {
-		writeln!(t, "{}", "None").unwrap();
-		t.reset().unwrap();
-		return Ok(());
-	}
-
-	let mut table = table!();
-
-	table.set_titles(row![
-		bMG->"Participant Id",
-		bMG->"Message",
-		bMG->"Public Key",
-		bMG->"Signature",
-	]);
-
-	let secp = util::static_secp_instance();
-	let secp_lock = secp.lock();
-
-	for m in msgs.messages {
-		let id = format!("{}", m.id);
-		let public_key = format!(
-			"{}",
-			util::to_hex(m.public_key.serialize_vec(&secp_lock, true).to_vec())
-		);
-		let message = match m.message {
-			Some(m) => format!("{}", m),
-			None => "None".to_owned(),
-		};
-		let message_sig = match m.message_sig {
-			Some(s) => format!("{}", util::to_hex(s.serialize_der(&secp_lock))),
-			None => "None".to_owned(),
-		};
-		if dark_background_color_scheme {
-			table.add_row(row![
-				bFC->id,
-				bFC->message,
-				bFC->public_key,
-				bFB->message_sig,
-			]);
-		} else {
-			table.add_row(row![
-				bFD->id,
-				bFb->message,
-				bFD->public_key,
-				bFB->message_sig,
-			]);
-		}
-	}
-
-	table.set_format(*prettytable::format::consts::FORMAT_NO_COLSEP);
-	table.printstd();
-	println!();
-
-	Ok(())
-}
-
 /// Display individual Payment Proof
 pub fn payment_proof(tx: &TxLogEntry) -> Result<(), Error> {
 	let title = format!("Payment Proof - Transaction '{}'", tx.id,);
@@ -966,7 +813,11 @@ pub fn payment_proof(tx: &TxLogEntry) -> Result<(), Error> {
 	t.fg(term::color::WHITE).unwrap();
 	writeln!(t).unwrap();
 	let receiver_signature = match pp.receiver_signature {
-		Some(s) => util::to_hex(s.to_bytes().to_vec()),
+		Some(s) => {
+			let sig_bytes = s.to_bytes();
+			let sig_ref: &[u8] = sig_bytes.as_ref();
+			sig_ref.to_hex()
+		}
 		None => "None".to_owned(),
 	};
 	let fee = match tx.fee {
@@ -983,11 +834,18 @@ pub fn payment_proof(tx: &TxLogEntry) -> Result<(), Error> {
 	};
 
 	let sender_signature = match pp.sender_signature {
-		Some(s) => util::to_hex(s.to_bytes().to_vec()),
+		Some(s) => {
+			let sig_bytes = s.to_bytes();
+			let sig_ref: &[u8] = sig_bytes.as_ref();
+			sig_ref.to_hex()
+		}
 		None => "None".to_owned(),
 	};
 	let kernel_excess = match tx.kernel_excess {
-		Some(e) => util::to_hex(e.0.to_vec()),
+		Some(e) => {
+			let excess: &[u8] = e.0.as_ref();
+			excess.to_hex()
+		}
 		None => "None".to_owned(),
 	};
 
@@ -1040,7 +898,11 @@ pub fn token_payment_proof(tx: &TokenTxLogEntry) -> Result<(), Error> {
 	t.fg(term::color::WHITE).unwrap();
 	writeln!(t).unwrap();
 	let receiver_signature = match pp.receiver_signature {
-		Some(s) => util::to_hex(s.to_bytes().to_vec()),
+		Some(s) => {
+			let sig_bytes = s.to_bytes();
+			let sig_ref: &[u8] = sig_bytes.as_ref();
+			sig_ref.to_hex()
+		}
 		None => "None".to_owned(),
 	};
 	let fee = match tx.fee {
@@ -1057,11 +919,18 @@ pub fn token_payment_proof(tx: &TokenTxLogEntry) -> Result<(), Error> {
 	};
 
 	let sender_signature = match pp.sender_signature {
-		Some(s) => util::to_hex(s.to_bytes().to_vec()),
+		Some(s) => {
+			let sig_bytes = s.to_bytes();
+			let sig_ref: &[u8] = sig_bytes.as_ref();
+			sig_ref.to_hex()
+		}
 		None => "None".to_owned(),
 	};
 	let kernel_excess = match tx.token_kernel_excess {
-		Some(e) => util::to_hex(e.0.to_vec()),
+		Some(e) => {
+			let excess: &[u8] = e.0.as_ref();
+			excess.to_hex()
+		}
 		None => "None".to_owned(),
 	};
 

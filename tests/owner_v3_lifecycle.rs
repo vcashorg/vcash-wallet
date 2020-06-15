@@ -40,11 +40,13 @@ mod common;
 use common::{
 	clean_output_dir, derive_ecdh_key, execute_command, execute_command_no_setup,
 	initial_setup_wallet, instantiate_wallet, send_request, send_request_enc, setup,
-	RetrieveSummaryInfoResp,
+	setup_global_chain_type, RetrieveSummaryInfoResp,
 };
 
 #[test]
 fn owner_v3_lifecycle() -> Result<(), grin_wallet_controller::Error> {
+	setup_global_chain_type();
+
 	let test_dir = "target/test_output/owner_v3_lifecycle";
 	setup(test_dir);
 
@@ -396,8 +398,7 @@ fn owner_v3_lifecycle() -> Result<(), grin_wallet_controller::Error> {
 			let res = api.process_invoice_tx(m, &slate, args);
 			assert!(res.is_ok());
 			slate = res.unwrap();
-			api.tx_lock_outputs(m, &slate, 0)?;
-
+			api.tx_lock_outputs(m, &slate)?;
 			Ok(())
 		},
 	)?;
@@ -407,9 +408,9 @@ fn owner_v3_lifecycle() -> Result<(), grin_wallet_controller::Error> {
 	let req = serde_json::json!({
 		"jsonrpc": "2.0",
 		"id": 1,
-		"method": "finalize_invoice_tx",
+		"method": "finalize_tx",
 		"params": {
-			"slate": VersionedSlate::into_version(slate, SlateVersion::V3)?,
+			"slate": VersionedSlate::into_version(slate, SlateVersion::V4)?,
 		}
 	});
 	let res =

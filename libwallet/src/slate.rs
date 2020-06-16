@@ -52,7 +52,7 @@ use crate::slate_versions::{CURRENT_SLATE_VERSION, GRIN_BLOCK_HEADER_VERSION};
 use crate::types::CbData;
 
 use crate::grin_core::core::committed::Committed;
-use crate::slate_versions::v4::{TokenInputV4, TokenOutputV4, TokenTxKernelV4};
+use crate::slate_versions::v4::{TokenCommitsV4, TokenInputV4, TokenOutputV4, TokenTxKernelV4};
 
 #[derive(Debug, Clone)]
 pub struct PaymentInfo {
@@ -309,12 +309,17 @@ impl Slate {
 		keychain: &K,
 		sec_nonce: &SecretKey,
 		sec_key: &SecretKey,
+		token_sec_key: &SecretKey,
 	) -> Result<(), Error>
 	where
 		K: Keychain,
 	{
+		let key = match self.token_type.clone() {
+			Some(_) => token_sec_key,
+			None => sec_key,
+		};
 		let pub_nonce = PublicKey::from_secret_key(keychain.secp(), &sec_nonce)?;
-		let pub_key = PublicKey::from_secret_key(keychain.secp(), &sec_key)?;
+		let pub_key = PublicKey::from_secret_key(keychain.secp(), key)?;
 		self.participant_data = self
 			.participant_data
 			.clone()
@@ -536,7 +541,7 @@ impl Slate {
 			Some(&self.pub_blind_sum(keychain.secp())?),
 			&msg,
 		)?;
-		let pub_excess = PublicKey::from_secret_key(keychain.secp(), &sec_key)?;
+		let pub_excess = PublicKey::from_secret_key(keychain.secp(), key)?;
 		let pub_nonce = PublicKey::from_secret_key(keychain.secp(), &sec_nonce)?;
 		for i in 0..self.num_participants() as usize {
 			// find my entry
@@ -879,9 +884,11 @@ impl Slate {
 
 		let msg_to_sign = self.msg_to_sign()?;
 
+		let kernel_offset = &self.offset.clone();
+
 		let final_tx = self.tx_or_err_mut()?;
 
-		let kernel_offset = &final_tx.offset;
+		final_tx.offset = kernel_offset.clone();
 
 		let secp = keychain.secp();
 
@@ -1023,6 +1030,7 @@ impl From<Slate> for SlateV4 {
 			id,
 			sta,
 			coms: (&slate).into(),
+			token_coms: (&slate).into(),
 			amt: amount,
 			token_type,
 			fee,
@@ -1093,6 +1101,7 @@ impl From<&Slate> for SlateV4 {
 			id,
 			sta,
 			coms: slate.into(),
+			token_coms: slate.into(),
 			amt: amount,
 			token_type,
 			fee,
@@ -1126,6 +1135,33 @@ impl From<&Slate> for Option<Vec<CommitsV4>> {
 		}
 		for o in outs.iter() {
 			ret_vec.push(CommitsV4 {
+				f: o.features.into(),
+				c: o.commit,
+				p: Some(o.proof),
+			});
+		}
+		Some(ret_vec)
+	}
+}
+
+impl From<&Slate> for Option<Vec<TokenCommitsV4>> {
+	fn from(slate: &Slate) -> Option<Vec<TokenCommitsV4>> {
+		let mut ret_vec = vec![];
+		let (ins, outs) = match slate.tx.as_ref() {
+			Some(t) => (t.body.token_inputs.clone(), t.body.token_outputs.clone()),
+			None => return None,
+		};
+		for i in ins.iter() {
+			ret_vec.push(TokenCommitsV4 {
+				k: i.token_type,
+				f: i.features.into(),
+				c: i.commit,
+				p: None,
+			});
+		}
+		for o in outs.iter() {
+			ret_vec.push(TokenCommitsV4 {
+				k: o.token_type,
 				f: o.features.into(),
 				c: o.commit,
 				p: Some(o.proof),
@@ -1377,6 +1413,7 @@ impl From<SlateV4> for Slate {
 			id,
 			sta,
 			coms: _,
+			token_coms: _,
 			amt: amount,
 			token_type,
 			fee,
@@ -1436,10 +1473,18 @@ pub fn tx_from_slate_v4(slate: &SlateV4) -> Option<Transaction> {
 		Some(c) => c,
 		None => return None,
 	};
+	let token_coms = match slate.token_coms.as_ref() {
+		Some(c) => c,
+		None => return None,
+	};
 	let secp = static_secp_instance();
 	let secp = secp.lock();
 	let mut calc_slate = Slate::blank(2, false);
 	calc_slate.fee = slate.fee;
+	calc_slate.token_type = match slate.token_type {
+		Some(token_type) => Some(token_type.to_hex()),
+		None => None,
+	};
 	for d in slate.sigs.iter() {
 		calc_slate.participant_data.push(ParticipantData {
 			public_blind_excess: d.xs,
@@ -1458,7 +1503,7 @@ pub fn tx_from_slate_v4(slate: &SlateV4) -> Option<Transaction> {
 	let kernel = TxKernel {
 		features: match slate.feat {
 			0 => KernelFeatures::Plain { fee: slate.fee },
-			1 => KernelFeatures::HeightLocked {
+			2 => KernelFeatures::HeightLocked {
 				fee: slate.fee,
 				lock_height: match slate.feat_args.as_ref() {
 					Some(a) => a.lock_hgt,
@@ -1483,6 +1528,40 @@ pub fn tx_from_slate_v4(slate: &SlateV4) -> Option<Transaction> {
 				features: c.f.into(),
 				commit: c.c,
 			}),
+		}
+	}
+	if slate.token_type.is_some() {
+		let token_type = slate.token_type.unwrap().clone();
+		let token_kernel = TokenTxKernel {
+			features: match slate.token_feat {
+				0 => TokenKernelFeatures::PlainToken,
+				2 => TokenKernelFeatures::HeightLockedToken {
+					lock_height: match slate.token_feat_args.as_ref() {
+						Some(a) => a.lock_hgt,
+						None => 0,
+					},
+				},
+				_ => TokenKernelFeatures::PlainToken,
+			},
+			token_type: token_type.clone(),
+			excess,
+			excess_sig,
+		};
+		tx.body.token_kernels.push(token_kernel);
+		for c in token_coms.iter() {
+			match &c.p {
+				Some(p) => tx.body.token_outputs.push(TokenOutput {
+					token_type: token_type.clone(),
+					features: c.f.into(),
+					commit: c.c,
+					proof: p.clone(),
+				}),
+				None => tx.body.token_inputs.push(TokenInput {
+					token_type: token_type.clone(),
+					features: c.f.into(),
+					commit: c.c,
+				}),
+			}
 		}
 	}
 	tx.offset = slate.off.clone();
@@ -1572,8 +1651,11 @@ impl From<&PaymentInfoV4> for PaymentInfo {
 impl From<OutputFeaturesV4> for OutputFeatures {
 	fn from(of: OutputFeaturesV4) -> OutputFeatures {
 		match of.0 {
+			0 => OutputFeatures::Plain,
 			1 => OutputFeatures::Coinbase,
-			0 | _ => OutputFeatures::Plain,
+			98 => OutputFeatures::TokenIssue,
+			99 => OutputFeatures::Token,
+			_ => OutputFeatures::Plain,
 		}
 	}
 }

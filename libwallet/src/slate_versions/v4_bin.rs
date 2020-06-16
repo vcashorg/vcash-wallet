@@ -31,6 +31,8 @@ use crate::slate_versions::v4::{
 	VersionCompatInfoV4,
 };
 
+use crate::slate_versions::v4::TokenCommitsV4;
+
 impl Writeable for SlateStateV4 {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), grin_ser::Error> {
 		let b = match self {
@@ -243,6 +245,8 @@ struct SlateOptStructsRef<'a> {
 	pub proof: &'a Option<PaymentInfoV4>,
 	/// token_type, default none
 	pub token_type: &'a Option<TokenKey>,
+	/// token_coms, default none
+	pub token_coms: &'a Option<Vec<TokenCommitsV4>>,
 }
 
 /// Serialization of optional structs
@@ -253,6 +257,8 @@ struct SlateOptStructs {
 	pub proof: Option<PaymentInfoV4>,
 	/// token_type, default none
 	pub token_type: Option<TokenKey>,
+	/// token_coms, default none
+	pub token_coms: Option<Vec<TokenCommitsV4>>,
 }
 
 impl<'a> Writeable for SlateOptStructsRef<'a> {
@@ -270,6 +276,9 @@ impl<'a> Writeable for SlateOptStructsRef<'a> {
 		if self.token_type.is_some() {
 			status |= 0x04
 		};
+		if self.token_coms.is_some() {
+			status |= 0x08
+		};
 		writer.write_u8(status)?;
 		if let Some(c) = self.coms {
 			ComsWrapRef(&c).write(writer)?;
@@ -279,6 +288,9 @@ impl<'a> Writeable for SlateOptStructsRef<'a> {
 		}
 		if let Some(t) = self.token_type {
 			t.write(writer)?;
+		}
+		if let Some(c) = self.token_coms {
+			TokenComsWrapRef(&c).write(writer)?;
 		}
 		Ok(())
 	}
@@ -302,10 +314,16 @@ impl Readable for SlateOptStructs {
 		} else {
 			None
 		};
+		let token_coms = if status & 0x08 > 0 {
+			Some(TokenComsWrap::read(reader)?.0)
+		} else {
+			None
+		};
 		Ok(SlateOptStructs {
 			coms,
 			proof,
 			token_type,
+			token_coms,
 		})
 	}
 }
@@ -354,6 +372,55 @@ impl Readable for ComsWrap {
 			ret
 		};
 		Ok(ComsWrap(coms))
+	}
+}
+
+struct TokenComsWrap(Vec<TokenCommitsV4>);
+struct TokenComsWrapRef<'a>(&'a Vec<TokenCommitsV4>);
+
+impl<'a> Writeable for TokenComsWrapRef<'a> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), grin_ser::Error> {
+		writer.write_u16(self.0.len() as u16)?;
+		for o in self.0.iter() {
+			//0 means input
+			//1 means output with proof
+			if o.p.is_some() {
+				writer.write_u8(1)?;
+			} else {
+				writer.write_u8(0)?;
+			}
+			o.k.write(writer)?;
+			OutputFeatures::from(o.f).write(writer)?;
+			o.c.write(writer)?;
+			if let Some(p) = o.p.clone() {
+				p.write(writer)?;
+			}
+		}
+		Ok(())
+	}
+}
+
+impl Readable for TokenComsWrap {
+	fn read<R: Reader>(reader: &mut R) -> Result<TokenComsWrap, grin_ser::Error> {
+		let coms_len = reader.read_u16()?;
+		let coms = {
+			let mut ret = vec![];
+			for _ in 0..coms_len as usize {
+				let is_output = reader.read_u8()?;
+				let c = TokenCommitsV4 {
+					k: TokenKey::read(reader)?,
+					f: OutputFeatures::read(reader)?.into(),
+					c: Commitment::read(reader)?,
+					p: match is_output {
+						1 => Some(RangeProof::read(reader)?),
+						0 | _ => None,
+					},
+				};
+				ret.push(c);
+			}
+			ret
+		};
+		Ok(TokenComsWrap(coms))
 	}
 }
 
@@ -464,11 +531,19 @@ impl Writeable for SlateV4Bin {
 			coms: &v4.coms,
 			proof: &v4.proof,
 			token_type: &v4.token_type,
+			token_coms: &v4.token_coms,
 		}
 		.write(writer)?;
 		// Write lock height for height locked kernels
-		if v4.feat == 1 {
+		if v4.feat == 2 {
 			let lock_hgt = match &v4.feat_args {
+				Some(l) => l.lock_hgt,
+				None => 0,
+			};
+			writer.write_u64(lock_hgt)?;
+		}
+		if v4.token_feat == 2 {
+			let lock_hgt = match &v4.token_feat_args {
 				Some(l) => l.lock_hgt,
 				None => 0,
 			};
@@ -492,7 +567,7 @@ impl Readable for SlateV4Bin {
 		let sigs = SigsWrap::read(reader)?.0;
 		let opt_structs = SlateOptStructs::read(reader)?;
 
-		let feat_args = if opts.feat == 1 {
+		let feat_args = if opts.feat == 2 {
 			Some(KernelFeaturesArgsV4 {
 				lock_hgt: reader.read_u64()?,
 			})
@@ -521,6 +596,7 @@ impl Readable for SlateV4Bin {
 			ttl: opts.ttl,
 			sigs,
 			coms: opt_structs.coms,
+			token_coms: opt_structs.token_coms,
 			proof: opt_structs.proof,
 			token_type: opt_structs.token_type,
 			feat_args,

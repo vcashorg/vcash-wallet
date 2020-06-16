@@ -1415,7 +1415,11 @@ where
 	let keychain = wallet.keychain(keychain_mask)?;
 
 	// restore my signature data
-	slate.add_participant_info(&keychain, &context.sec_key, &context.sec_nonce, None)?;
+	let key = match slate.token_type.clone() {
+		Some(_) => &context.token_sec_key,
+		None => &context.sec_key,
+	};
+	slate.add_participant_info(&keychain, key, &context.sec_nonce, None)?;
 
 	let mut parts = vec![];
 	for (id, _, value) in &context.get_inputs() {

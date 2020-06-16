@@ -141,6 +141,10 @@ pub struct SlateV4 {
 	#[serde(default = "default_coms_none")]
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub coms: Option<Vec<CommitsV4>>,
+	/// Inputs/Output commits added to slate
+	#[serde(default = "default_token_coms_none")]
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub token_coms: Option<Vec<TokenCommitsV4>>,
 	// Optional Structs
 	/// Payment Proof
 	#[serde(default = "default_payment_none")]
@@ -169,6 +173,10 @@ fn offset_is_zero(o: &BlindingFactor) -> bool {
 }
 
 fn default_coms_none() -> Option<Vec<CommitsV4>> {
+	None
+}
+
+fn default_token_coms_none() -> Option<Vec<TokenCommitsV4>> {
 	None
 }
 
@@ -260,6 +268,27 @@ fn default_receiver_signature_none() -> Option<DalekSignature> {
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct CommitsV4 {
 	/// Options for an output's structure or use
+	#[serde(default = "default_output_feature")]
+	#[serde(skip_serializing_if = "output_feature_is_plain")]
+	pub f: OutputFeaturesV4,
+	/// The homomorphic commitment representing the output amount
+	#[serde(
+		serialize_with = "ser::as_base64",
+		deserialize_with = "ser::commitment_from_base64"
+	)]
+	pub c: Commitment,
+	/// A proof that the commitment is in the right range
+	/// Only applies for transaction outputs
+	#[serde(with = "ser::option_rangeproof_base64")]
+	#[serde(default = "default_range_proof")]
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub p: Option<RangeProof>,
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub struct TokenCommitsV4 {
+	pub k: TokenKey,
+	/// Options for an token output's structure or use
 	#[serde(default = "default_output_feature")]
 	#[serde(skip_serializing_if = "output_feature_is_plain")]
 	pub f: OutputFeaturesV4,
@@ -622,6 +651,7 @@ impl From<SlateV3> for SlateV4 {
 			id,
 			sta: SlateStateV4::Unknown,
 			coms: (&slate).into(),
+			token_coms: (&slate).into(),
 			amt: amount,
 			token_type,
 			fee,
@@ -649,6 +679,29 @@ impl From<&SlateV3> for Option<Vec<CommitsV4>> {
 		}
 		for o in slate.tx.body.outputs.iter() {
 			ret_vec.push(CommitsV4 {
+				f: o.features.into(),
+				c: o.commit,
+				p: Some(o.proof),
+			});
+		}
+		Some(ret_vec)
+	}
+}
+
+impl From<&SlateV3> for Option<Vec<TokenCommitsV4>> {
+	fn from(slate: &SlateV3) -> Option<Vec<TokenCommitsV4>> {
+		let mut ret_vec = vec![];
+		for i in slate.tx.body.token_inputs.iter() {
+			ret_vec.push(TokenCommitsV4 {
+				k: i.token_type,
+				f: i.features.into(),
+				c: i.commit,
+				p: None,
+			});
+		}
+		for o in slate.tx.body.token_outputs.iter() {
+			ret_vec.push(TokenCommitsV4 {
+				k: o.token_type,
 				f: o.features.into(),
 				c: o.commit,
 				p: Some(o.proof),
@@ -709,6 +762,7 @@ impl TryFrom<&SlateV4> for SlateV3 {
 			id,
 			sta: _,
 			coms,
+			token_coms,
 			amt: amount,
 			token_type,
 			fee,

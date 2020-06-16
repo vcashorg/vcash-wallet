@@ -147,7 +147,12 @@ where
 	if ret_slate.is_compact() {
 		ret_slate.amount = 0;
 		ret_slate.fee = 0;
-		ret_slate.remove_other_sigdata(&keychain, &context.sec_nonce, &context.sec_key)?;
+		ret_slate.remove_other_sigdata(
+			&keychain,
+			&context.sec_nonce,
+			&context.sec_key,
+			&context.token_sec_key,
+		)?;
 	}
 
 	ret_slate.state = SlateState::Standard2;

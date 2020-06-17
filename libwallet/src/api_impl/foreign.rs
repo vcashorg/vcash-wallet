@@ -125,11 +125,7 @@ where
 		use_test_rng,
 	)?;
 
-	let excess = if ret_slate.token_type.is_some() {
-		ret_slate.calc_token_excess(keychain.secp())?
-	} else {
-		ret_slate.calc_excess(keychain.secp())?
-	};
+	let excess = ret_slate.calc_excess(keychain.secp())?;
 
 	if let Some(ref mut p) = ret_slate.payment_proof {
 		let sig = tx::create_payment_proof_signature(

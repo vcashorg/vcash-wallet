@@ -439,7 +439,10 @@ impl Slate {
 		}
 		// Always choose my part of the offset, and subtract from my excess
 		if self.is_compact() {
-			self.generate_offset(keychain, sec_key, use_test_rng)?;
+			//token recevier do not need to generate offset
+			if self.token_type.is_none() || self.participant_data.is_empty() {
+				self.generate_offset(keychain, sec_key, use_test_rng)?;
+			}
 		}
 		let key = match self.token_type.clone() {
 			Some(_) => token_sec_key,

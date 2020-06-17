@@ -507,7 +507,7 @@ where
 			};
 			let keychain = wallet.keychain(keychain_mask)?;
 			let parent_key_id = wallet.parent_key_id();
-			let excess = slate.calc_token_excess(keychain.secp())?;
+			let excess = slate.calc_excess(keychain.secp())?;
 			let sender_key =
 				address::address_from_derivation_path(&keychain, &parent_key_id, derivation_index)?;
 			let sender_address = OnionV3Address::from_private(&sender_key.0)?;
@@ -775,11 +775,7 @@ where
 			.into());
 		}
 
-		let excess = if slate.token_type.is_some() {
-			slate.calc_token_excess(keychain.secp())?
-		} else {
-			slate.calc_excess(keychain.secp())?
-		};
+		let excess = slate.calc_excess(keychain.secp())?;
 
 		let msg = payment_proof_message(
 			slate.token_type.clone(),

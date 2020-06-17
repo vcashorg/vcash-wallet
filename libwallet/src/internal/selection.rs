@@ -153,7 +153,7 @@ where
 		change_outputs,
 		selection_strategy_is_use_all,
 		&parent_key_id,
-		include_inputs_in_sum,
+		true,
 	)?;
 
 	let token_output_len = token_change_amounts_derivations.len() + 1;

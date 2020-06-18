@@ -193,6 +193,7 @@ where
 	);
 
 	context.fee = fee;
+	context.amount = slate.amount;
 
 	// Store our private identifiers for each input
 	for input in inputs {

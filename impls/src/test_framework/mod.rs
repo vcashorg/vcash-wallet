@@ -18,6 +18,7 @@ use crate::chain;
 use crate::chain::Chain;
 use crate::core;
 use crate::core::core::{Output, OutputFeatures, OutputIdentifier, Transaction, TxKernel};
+use crate::core::core::{TokenKey, TokenOutputIdentifier};
 use crate::core::{consensus, global, pow};
 use crate::keychain;
 use crate::libwallet;
@@ -54,6 +55,32 @@ fn get_output_local(chain: &chain::Chain, commit: &pedersen::Commitment) -> Opti
 	None
 }
 
+/// Get an output from the chain locally and present it back as an API output
+fn get_token_output_local(
+	chain: &chain::Chain,
+	token_type: TokenKey,
+	commit: &pedersen::Commitment,
+) -> Option<api::TokenOutput> {
+	let outputs = [
+		TokenOutputIdentifier::new(OutputFeatures::TokenIssue, token_type, &commit),
+		TokenOutputIdentifier::new(OutputFeatures::Token, token_type, &commit),
+	];
+
+	for x in outputs.iter() {
+		if chain.get_token_unspent(&x).unwrap().is_some() {
+			let block_height = chain.get_header_for_token_output(&x).unwrap().height;
+			let output_pos = chain.get_token_output_pos(&x.commit).unwrap_or(0);
+			return Some(api::TokenOutput::new(
+				&commit,
+				token_type,
+				block_height,
+				output_pos,
+			));
+		}
+	}
+	None
+}
+
 /// Get a kernel from the chain locally
 fn get_kernel_local(
 	chain: Arc<chain::Chain>,
@@ -65,6 +92,23 @@ fn get_kernel_local(
 		.get_kernel_height(&excess, min_height, max_height)
 		.unwrap()
 		.map(|(tx_kernel, height, mmr_index)| api::LocatedTxKernel {
+			tx_kernel,
+			height,
+			mmr_index,
+		})
+}
+
+/// Get a token kernel from the chain locally
+fn get_token_kernel_local(
+	chain: Arc<chain::Chain>,
+	excess: &pedersen::Commitment,
+	min_height: Option<u64>,
+	max_height: Option<u64>,
+) -> Option<api::LocatedTokenTxKernel> {
+	chain
+		.get_token_kernel_height(&excess, min_height, max_height)
+		.unwrap()
+		.map(|(tx_kernel, height, mmr_index)| api::LocatedTokenTxKernel {
 			tx_kernel,
 			height,
 			mmr_index,
@@ -94,6 +138,30 @@ fn get_outputs_by_pmmr_index_local(
 	}
 }
 
+/// get token output listing traversing pmmr from local
+fn get_token_outputs_by_pmmr_index_local(
+	chain: Arc<chain::Chain>,
+	start_index: u64,
+	end_index: Option<u64>,
+	max: u64,
+) -> api::OutputListing {
+	let outputs = chain
+		.unspent_token_outputs_by_pmmr_index(start_index, max, end_index)
+		.unwrap();
+	api::OutputListing {
+		last_retrieved_index: outputs.0,
+		highest_index: outputs.1,
+		outputs: outputs
+			.2
+			.iter()
+			.map(|x| {
+				api::OutputPrintable::from_token_output(x, chain.clone(), None, true, false)
+					.unwrap()
+			})
+			.collect(),
+	}
+}
+
 /// get output listing in a given block range
 fn height_range_to_pmmr_indices_local(
 	chain: Arc<chain::Chain>,
@@ -102,6 +170,22 @@ fn height_range_to_pmmr_indices_local(
 ) -> api::OutputListing {
 	let indices = chain
 		.block_height_range_to_pmmr_indices(start_index, end_index)
+		.unwrap();
+	api::OutputListing {
+		last_retrieved_index: indices.0,
+		highest_index: indices.1,
+		outputs: vec![],
+	}
+}
+
+/// get token output listing in a given block range
+fn height_range_to_token_pmmr_indices_local(
+	chain: Arc<chain::Chain>,
+	start_index: u64,
+	end_index: Option<u64>,
+) -> api::OutputListing {
+	let indices = chain
+		.block_height_range_to_token_pmmr_indices(start_index, end_index)
 		.unwrap();
 	api::OutputListing {
 		last_retrieved_index: indices.0,
@@ -290,7 +374,7 @@ where
 fn get_block_bit_diff(block: &mut core::core::Block) {
 	block.header.bits = 0x2100ffff;
 	let coin_base_str = core::core::get_grin_magic_data_str(block.header.hash());
-	block.aux_data.coinbase_tx = util::from_hex(coin_base_str.as_str()).unwrap();
-	block.aux_data.aux_header.merkle_root = block.aux_data.coinbase_tx.dhash();
-	block.aux_data.aux_header.nbits = block.header.bits;
+	block.header.btc_pow.coinbase_tx = util::from_hex(coin_base_str.as_str()).unwrap();
+	block.header.btc_pow.aux_header.merkle_root = block.header.btc_pow.coinbase_tx.dhash();
+	block.header.btc_pow.aux_header.nbits = block.header.bits;
 }

@@ -20,7 +20,7 @@ use crate::api::{self, LocatedTokenTxKernel, LocatedTxKernel};
 use crate::chain::types::NoopAdapter;
 use crate::chain::Chain;
 use crate::core::core::verifier_cache::LruVerifierCache;
-use crate::core::core::{TokenTxKernel, Transaction, TxKernel};
+use crate::core::core::{TokenKey, TokenTxKernel, Transaction, TxKernel};
 use crate::core::global::{set_local_chain_type, ChainTypes};
 use crate::core::pow;
 use crate::keychain::Keychain;
@@ -157,12 +157,18 @@ where
 			let resp = match m.method.as_ref() {
 				"get_chain_tip" => self.get_chain_tip(m)?,
 				"get_outputs_from_node" => self.get_outputs_from_node(m)?,
+				"get_token_outputs_from_node" => self.get_token_outputs_from_node(m)?,
 				"get_outputs_by_pmmr_index" => self.get_outputs_by_pmmr_index(m)?,
+				"get_token_outputs_by_pmmr_index" => self.get_token_outputs_by_pmmr_index(m)?,
 				"height_range_to_pmmr_indices" => self.height_range_to_pmmr_indices(m)?,
+				"height_range_to_token_pmmr_indices" => {
+					self.height_range_to_token_pmmr_indices(m)?
+				}
 				"send_tx_slate" => self.send_tx_slate(m)?,
 				"post_tx" => self.post_tx(m)?,
 				"get_kernel" => self.get_kernel(m)?,
-				_ => panic!("Unknown Wallet Proxy Message"),
+				"get_token_kernel" => self.get_token_kernel(m)?,
+				_ => panic!("Unknown Wallet Proxy Message {:?}", m.method.clone()),
 			};
 
 			self.respond(resp);
@@ -290,6 +296,38 @@ where
 	}
 
 	/// get api outputs
+	fn get_token_outputs_from_node(
+		&mut self,
+		m: WalletProxyMessage,
+	) -> Result<WalletProxyMessage, libwallet::Error> {
+		let split = m.body.split(',');
+		//let mut api_outputs: HashMap<pedersen::Commitment, String> = HashMap::new();
+		let mut outputs: Vec<api::TokenOutput> = vec![];
+		for o in split {
+			let o_str = String::from(o);
+			if o_str.is_empty() {
+				continue;
+			}
+			let c = util::from_hex(o_str.as_str()).unwrap();
+			let commit = Commitment::from_vec(c);
+			let out = super::get_token_output_local(
+				&self.chain.clone(),
+				TokenKey::new_zero_key(),
+				&commit,
+			);
+			if let Some(o) = out {
+				outputs.push(o);
+			}
+		}
+		Ok(WalletProxyMessage {
+			sender_id: "node".to_owned(),
+			dest: m.sender_id,
+			method: m.method,
+			body: serde_json::to_string(&outputs).unwrap(),
+		})
+	}
+
+	/// get api outputs
 	fn get_outputs_by_pmmr_index(
 		&mut self,
 		m: WalletProxyMessage,
@@ -304,6 +342,33 @@ where
 		};
 		let ol =
 			super::get_outputs_by_pmmr_index_local(self.chain.clone(), start_index, end_index, max);
+		Ok(WalletProxyMessage {
+			sender_id: "node".to_owned(),
+			dest: m.sender_id,
+			method: m.method,
+			body: serde_json::to_string(&ol).unwrap(),
+		})
+	}
+
+	/// get api token outputs
+	fn get_token_outputs_by_pmmr_index(
+		&mut self,
+		m: WalletProxyMessage,
+	) -> Result<WalletProxyMessage, libwallet::Error> {
+		let split = m.body.split(',').collect::<Vec<&str>>();
+		let start_index = split[0].parse::<u64>().unwrap();
+		let max = split[1].parse::<u64>().unwrap();
+		let end_index = split[2].parse::<u64>().unwrap();
+		let end_index = match end_index {
+			0 => None,
+			e => Some(e),
+		};
+		let ol = super::get_token_outputs_by_pmmr_index_local(
+			self.chain.clone(),
+			start_index,
+			end_index,
+			max,
+		);
 		Ok(WalletProxyMessage {
 			sender_id: "node".to_owned(),
 			dest: m.sender_id,
@@ -334,6 +399,31 @@ where
 		})
 	}
 
+	/// get api token outputs by height
+	fn height_range_to_token_pmmr_indices(
+		&mut self,
+		m: WalletProxyMessage,
+	) -> Result<WalletProxyMessage, libwallet::Error> {
+		let split = m.body.split(',').collect::<Vec<&str>>();
+		let start_index = split[0].parse::<u64>().unwrap();
+		let end_index = split[1].parse::<u64>().unwrap();
+		let end_index = match end_index {
+			0 => None,
+			e => Some(e),
+		};
+		let ol = super::height_range_to_token_pmmr_indices_local(
+			self.chain.clone(),
+			start_index,
+			end_index,
+		);
+		Ok(WalletProxyMessage {
+			sender_id: "node".to_owned(),
+			dest: m.sender_id,
+			method: m.method,
+			body: serde_json::to_string(&ol).unwrap(),
+		})
+	}
+
 	/// get kernel
 	fn get_kernel(
 		&mut self,
@@ -354,6 +444,34 @@ where
 			m => Some(m),
 		};
 		let k = super::get_kernel_local(self.chain.clone(), &commit, min, max);
+		Ok(WalletProxyMessage {
+			sender_id: "node".to_owned(),
+			dest: m.sender_id,
+			method: m.method,
+			body: serde_json::to_string(&k).unwrap(),
+		})
+	}
+
+	/// get token kernel
+	fn get_token_kernel(
+		&mut self,
+		m: WalletProxyMessage,
+	) -> Result<WalletProxyMessage, libwallet::Error> {
+		let split = m.body.split(',').collect::<Vec<&str>>();
+		let excess = split[0].parse::<String>().unwrap();
+		let min = split[1].parse::<u64>().unwrap();
+		let max = split[2].parse::<u64>().unwrap();
+		let commit_bytes = util::from_hex(excess.as_str()).unwrap();
+		let commit = pedersen::Commitment::from_vec(commit_bytes);
+		let min = match min {
+			0 => None,
+			m => Some(m),
+		};
+		let max = match max {
+			0 => None,
+			m => Some(m),
+		};
+		let k = super::get_token_kernel_local(self.chain.clone(), &commit, min, max);
 		Ok(WalletProxyMessage {
 			sender_id: "node".to_owned(),
 			dest: m.sender_id,
@@ -723,7 +841,7 @@ impl NodeClient for LocalWalletClient {
 		let m = WalletProxyMessage {
 			sender_id: self.id.clone(),
 			dest: self.node_url().to_owned(),
-			method: "get_outputs_by_token_pmmr_index".to_owned(),
+			method: "get_token_outputs_by_pmmr_index".to_owned(),
 			body: query_str,
 		};
 		{

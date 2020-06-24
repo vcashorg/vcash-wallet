@@ -615,13 +615,14 @@ where
 	/// let tx_id = None;
 	/// let tx_slate_id = None;
 	///
-	/// // Return all TokenTxLogEntries
+	/// // Return all TokenTxLogEntry
 	/// let result = api_owner.retrieve_token_txs(None, update_from_node, tx_id, tx_slate_id);
 	///
 	/// if let Ok((was_updated, tx_log_entries)) = result {
-	///		//...
+	///     //...
 	/// }
-	/// `
+	/// ```
+
 	pub fn retrieve_token_txs(
 		&self,
 		keychain_mask: Option<&SecretKey>,

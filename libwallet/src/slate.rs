@@ -810,8 +810,20 @@ impl Slate {
 		Ok(Commitment::from_pubkey(secp, &sum)?)
 	}
 
+	/// return the final excess
+	pub fn calc_final_excess(&self, secp: &secp::Secp256k1) -> Result<Commitment, Error> {
+		let tx = self.tx_or_err()?.clone();
+		let kernel_offset = tx.offset.clone();
+		let overage = tx.fee() as i64;
+		let tx_excess = tx.sum_commitments(overage)?;
+
+		// subtract the kernel_excess (built from kernel_offset)
+		let offset_excess = secp.commit(0, kernel_offset.secret_key(secp)?)?;
+		Ok(secp.commit_sum(vec![tx_excess], vec![offset_excess])?)
+	}
+
 	/// return the final token excess
-	pub fn calc_token_excess(&self, secp: &secp::Secp256k1) -> Result<Commitment, Error> {
+	pub fn calc_token_final_excess(&self, secp: &secp::Secp256k1) -> Result<Commitment, Error> {
 		let tx = self.tx_or_err()?.clone();
 
 		let token_type = TokenKey::from_hex(self.token_type.clone().unwrap().as_str())?;
@@ -889,22 +901,14 @@ impl Slate {
 
 		let kernel_offset = &self.offset.clone();
 
+		let final_excess = self.calc_final_excess(keychain.secp())?;
+
 		let final_tx = self.tx_or_err_mut()?;
 
 		final_tx.offset = kernel_offset.clone();
 
 		let secp = keychain.secp();
 
-		// build the final excess based on final tx and offset
-		let final_excess = {
-			// sum the input/output commitments on the final tx
-			let overage = final_tx.fee() as i64;
-			let tx_excess = final_tx.sum_commitments(overage)?;
-
-			// subtract the kernel_excess (built from kernel_offset)
-			let offset_excess = secp.commit(0, kernel_offset.secret_key(secp)?)?;
-			secp.commit_sum(vec![tx_excess], vec![offset_excess])?
-		};
 		let pubkey = final_excess.to_pubkey(&secp)?;
 
 		let sig = aggsig::sign_single(secp, &msg_to_sign, sec_key, None, Some(&pubkey))?;
@@ -939,7 +943,7 @@ impl Slate {
 	{
 		self.check_fees()?;
 
-		let final_excess = self.calc_token_excess(keychain.secp())?;
+		let final_excess = self.calc_excess(keychain.secp())?;
 
 		let final_tx = self.tx_or_err_mut()?;
 

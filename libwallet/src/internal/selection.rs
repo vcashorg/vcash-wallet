@@ -1445,7 +1445,7 @@ where
 			parts.push(build::token_input(
 				*value,
 				TokenKey::from_hex(slate.token_type.clone().unwrap().as_str())?,
-				false,
+				i.is_token_issue,
 				i.key_id.clone(),
 			));
 		}

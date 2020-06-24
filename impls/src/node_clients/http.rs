@@ -340,73 +340,6 @@ impl NodeClient for HTTPNodeClient {
 		Ok(api_outputs)
 	}
 
-	fn get_outputs_by_pmmr_index(
-		&self,
-		start_index: u64,
-		end_index: Option<u64>,
-		max_outputs: u64,
-	) -> Result<
-		(
-			u64,
-			u64,
-			Vec<(pedersen::Commitment, pedersen::RangeProof, bool, u64, u64)>,
-		),
-		libwallet::Error,
-	> {
-		let mut api_outputs: Vec<(pedersen::Commitment, pedersen::RangeProof, bool, u64, u64)> =
-			Vec::new();
-
-		let params = json!([start_index, end_index, max_outputs, Some(true)]);
-		let res = self.send_json_request::<OutputListing>("get_unspent_outputs", &params)?;
-		for out in res.outputs {
-			let is_coinbase = match out.output_type {
-				api::OutputType::Coinbase => true,
-				_ => false,
-			};
-			let range_proof = match out.range_proof() {
-				Ok(r) => r,
-				Err(e) => {
-					let msg = format!(
-						"Unexpected error in returned output (missing range proof): {:?}. {:?}, {}",
-						out.commit, out, e
-					);
-					error!("{}", msg);
-					return Err(libwallet::ErrorKind::ClientCallback(msg).into());
-				}
-			};
-			let block_height = match out.block_height {
-				Some(h) => h,
-				None => {
-					let msg = format!(
-						"Unexpected error in returned output (missing block height): {:?}. {:?}",
-						out.commit, out
-					);
-					error!("{}", msg);
-					return Err(libwallet::ErrorKind::ClientCallback(msg).into());
-				}
-			};
-			api_outputs.push((
-				out.commit,
-				range_proof,
-				is_coinbase,
-				block_height,
-				out.mmr_index,
-			));
-		}
-		Ok((res.highest_index, res.last_retrieved_index, api_outputs))
-	}
-
-	fn height_range_to_pmmr_indices(
-		&self,
-		start_height: u64,
-		end_height: Option<u64>,
-	) -> Result<(u64, u64), libwallet::Error> {
-		let params = json!([start_height, end_height]);
-		let res = self.send_json_request::<OutputListing>("get_pmmr_indices", &params)?;
-
-		Ok((res.last_retrieved_index, res.highest_index))
-	}
-
 	/// Retrieve outputs from node
 	fn get_token_outputs_from_node(
 		&self,
@@ -535,6 +468,62 @@ impl NodeClient for HTTPNodeClient {
 		Ok(api_outputs)
 	}
 
+	fn get_outputs_by_pmmr_index(
+		&self,
+		start_index: u64,
+		end_index: Option<u64>,
+		max_outputs: u64,
+	) -> Result<
+		(
+			u64,
+			u64,
+			Vec<(pedersen::Commitment, pedersen::RangeProof, bool, u64, u64)>,
+		),
+		libwallet::Error,
+	> {
+		let mut api_outputs: Vec<(pedersen::Commitment, pedersen::RangeProof, bool, u64, u64)> =
+			Vec::new();
+
+		let params = json!([start_index, end_index, max_outputs, Some(true)]);
+		let res = self.send_json_request::<OutputListing>("get_unspent_outputs", &params)?;
+		for out in res.outputs {
+			let is_coinbase = match out.output_type {
+				api::OutputType::Coinbase => true,
+				_ => false,
+			};
+			let range_proof = match out.range_proof() {
+				Ok(r) => r,
+				Err(e) => {
+					let msg = format!(
+						"Unexpected error in returned output (missing range proof): {:?}. {:?}, {}",
+						out.commit, out, e
+					);
+					error!("{}", msg);
+					return Err(libwallet::ErrorKind::ClientCallback(msg).into());
+				}
+			};
+			let block_height = match out.block_height {
+				Some(h) => h,
+				None => {
+					let msg = format!(
+						"Unexpected error in returned output (missing block height): {:?}. {:?}",
+						out.commit, out
+					);
+					error!("{}", msg);
+					return Err(libwallet::ErrorKind::ClientCallback(msg).into());
+				}
+			};
+			api_outputs.push((
+				out.commit,
+				range_proof,
+				is_coinbase,
+				block_height,
+				out.mmr_index,
+			));
+		}
+		Ok((res.highest_index, res.last_retrieved_index, api_outputs))
+	}
+
 	fn get_token_outputs_by_pmmr_index(
 		&self,
 		start_index: u64,
@@ -603,6 +592,17 @@ impl NodeClient for HTTPNodeClient {
 			));
 		}
 		Ok((res.highest_index, res.last_retrieved_index, api_outputs))
+	}
+
+	fn height_range_to_pmmr_indices(
+		&self,
+		start_height: u64,
+		end_height: Option<u64>,
+	) -> Result<(u64, u64), libwallet::Error> {
+		let params = json!([start_height, end_height]);
+		let res = self.send_json_request::<OutputListing>("get_pmmr_indices", &params)?;
+
+		Ok((res.last_retrieved_index, res.highest_index))
 	}
 
 	fn height_range_to_token_pmmr_indices(

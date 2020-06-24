@@ -497,8 +497,11 @@ where
 		};
 
 		let parent_key = tx.parent_key_id.clone();
-		tx.kernel_excess = Some(slate.tx_or_err()?.body.kernels[0].excess);
-		tx.token_kernel_excess = Some(slate.tx_or_err()?.body.token_kernels[0].excess);
+		{
+			let keychain = wallet.keychain(keychain_mask)?;
+			tx.kernel_excess = Some(slate.calc_final_excess(keychain.secp())?);
+			tx.token_kernel_excess = Some(slate.calc_excess(keychain.secp())?);
+		}
 
 		if let Some(ref p) = slate.clone().payment_proof {
 			let derivation_index = match context.payment_proof_derivation_index {
@@ -526,6 +529,8 @@ where
 				sender_signature: Some(sig),
 			})
 		}
+
+		wallet.store_tx(&format!("{}", tx.tx_slate_id.unwrap()), slate.tx_or_err()?)?;
 
 		let mut batch = wallet.batch(keychain_mask)?;
 		batch.save_token_tx_log_entry(tx, &parent_key)?;

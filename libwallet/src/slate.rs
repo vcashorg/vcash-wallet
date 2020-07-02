@@ -899,13 +899,15 @@ impl Slate {
 
 		let msg_to_sign = self.msg_to_sign()?;
 
-		let kernel_offset = &self.offset.clone();
+		{
+			let offset = self.offset.clone();
+			let final_tx = self.tx_or_err_mut()?;
+			final_tx.offset = offset;
+		}
 
 		let final_excess = self.calc_final_excess(keychain.secp())?;
 
 		let final_tx = self.tx_or_err_mut()?;
-
-		final_tx.offset = kernel_offset.clone();
 
 		let secp = keychain.secp();
 

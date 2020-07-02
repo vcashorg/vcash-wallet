@@ -14,7 +14,7 @@
 //! Functions to restore a wallet's outputs from just the master seed
 
 use crate::api_impl::owner_updater::StatusMessage;
-use crate::grin_core::consensus::{valid_header_version, WEEK_HEIGHT};
+use crate::grin_core::consensus::{valid_header_version, WEEK_HEIGHT_ORIGIN};
 use crate::grin_core::core::HeaderVersion;
 use crate::grin_core::global;
 use crate::grin_core::libtx::proof;
@@ -84,12 +84,14 @@ where
 		// will fail if it's not ours
 		let info = {
 			// Before HF+2wk, try legacy rewind first
-			let info_legacy =
-				if valid_header_version(height.saturating_sub(2 * WEEK_HEIGHT), legacy_version) {
-					proof::rewind(keychain.secp(), &legacy_builder, *commit, None, *proof)?
-				} else {
-					None
-				};
+			let info_legacy = if valid_header_version(
+				height.saturating_sub(2 * WEEK_HEIGHT_ORIGIN),
+				legacy_version,
+			) {
+				proof::rewind(keychain.secp(), &legacy_builder, *commit, None, *proof)?
+			} else {
+				None
+			};
 
 			// If legacy didn't work, try new rewind
 			if info_legacy.is_none() {

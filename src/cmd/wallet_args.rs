@@ -285,6 +285,21 @@ fn parse_required<'a>(args: &'a ArgMatches, name: &str) -> Result<&'a str, Parse
 	}
 }
 
+// parses an optional value, throws error if value isn't provided
+fn parse_optional(args: &ArgMatches, name: &str) -> Result<Option<String>, ParseError> {
+	if !args.is_present(name) {
+		return Ok(None);
+	}
+	let arg = args.value_of(name);
+	match arg {
+		Some(ar) => Ok(Some(ar.into())),
+		None => {
+			let msg = format!("Value for argument '{}' is required in this context", name,);
+			Err(ParseError::ArgumentError(msg))
+		}
+	}
+}
+
 // parses a number, or throws error with message otherwise
 fn parse_u64(arg: &str, name: &str) -> Result<u64, ParseError> {
 	let val = arg.parse::<u64>();
@@ -560,6 +575,8 @@ pub fn parse_send_args(args: &ArgMatches) -> Result<command::SendArgs, ParseErro
 		}
 	};
 
+	let outfile = parse_optional(args, "outfile")?;
+
 	Ok(command::SendArgs {
 		amount,
 		token_type,
@@ -574,6 +591,8 @@ pub fn parse_send_args(args: &ArgMatches) -> Result<command::SendArgs, ParseErro
 		ttl_blocks,
 		target_slate_version: target_slate_version,
 		output_v4_slate,
+		outfile,
+		skip_tor: args.is_present("manual"),
 	})
 }
 
@@ -597,9 +616,13 @@ pub fn parse_receive_args(args: &ArgMatches) -> Result<command::ReceiveArgs, Par
 		input_slatepack_message = Some(prompt_slatepack()?);
 	}
 
+	let outfile = parse_optional(args, "outfile")?;
+
 	Ok(command::ReceiveArgs {
 		input_file,
 		input_slatepack_message,
+		skip_tor: args.is_present("manual"),
+		outfile,
 	})
 }
 
@@ -623,9 +646,13 @@ pub fn parse_unpack_args(args: &ArgMatches) -> Result<command::ReceiveArgs, Pars
 		input_slatepack_message = Some(prompt_slatepack()?);
 	}
 
+	let outfile = parse_optional(args, "outfile")?;
+
 	Ok(command::ReceiveArgs {
 		input_file,
 		input_slatepack_message,
+		skip_tor: args.is_present("manual"),
+		outfile,
 	})
 }
 
@@ -651,11 +678,14 @@ pub fn parse_finalize_args(args: &ArgMatches) -> Result<command::FinalizeArgs, P
 		input_slatepack_message = Some(prompt_slatepack()?);
 	}
 
+	let outfile = parse_optional(args, "outfile")?;
+
 	Ok(command::FinalizeArgs {
 		input_file,
 		input_slatepack_message,
 		fluff: fluff,
 		nopost: nopost,
+		outfile,
 	})
 }
 
@@ -708,6 +738,8 @@ pub fn parse_issue_invoice_args(
 		None => "default",
 	};
 
+	let outfile = parse_optional(args, "outfile")?;
+
 	Ok(command::IssueInvoiceArgs {
 		dest: dest.into(),
 		output_v4_slate,
@@ -717,6 +749,7 @@ pub fn parse_issue_invoice_args(
 			amount,
 			target_slate_version,
 		},
+		outfile,
 	})
 }
 
@@ -790,6 +823,8 @@ pub fn parse_process_invoice_args(
 		prompt_pay_invoice(&slate, &dest)?;
 	}
 
+	let outfile = parse_optional(args, "outfile")?;
+
 	Ok(command::ProcessInvoiceArgs {
 		minimum_confirmations: min_c,
 		selection_strategy: selection_strategy.to_owned(),
@@ -798,6 +833,8 @@ pub fn parse_process_invoice_args(
 		slate,
 		max_outputs,
 		ttl_blocks,
+		skip_tor: args.is_present("manual"),
+		outfile,
 	})
 }
 

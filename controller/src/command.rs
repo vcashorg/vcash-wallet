@@ -312,6 +312,8 @@ pub struct SendArgs {
 	pub target_slate_version: Option<u16>,
 	pub payment_proof_address: Option<SlatepackAddress>,
 	pub ttl_blocks: Option<u64>,
+	pub skip_tor: bool,
+	pub outfile: Option<String>,
 	//TODO: Remove HF3
 	pub output_v4_slate: bool,
 }
@@ -349,14 +351,14 @@ where
 			};
 			match global::get_chain_type() {
 				global::ChainTypes::Mainnet => {
-					if cur_height < 80000 && !args.output_v4_slate {
+					if cur_height < 80640 && !args.output_v4_slate {
 						true
 					} else {
 						false
 					}
 				}
 				global::ChainTypes::Floonet => {
-					if cur_height < 180 && !args.output_v4_slate {
+					if cur_height < 864 && !args.output_v4_slate {
 						true
 					} else {
 						false
@@ -507,6 +509,14 @@ where
 		Ok(())
 	})?;
 
+	let tor_config = match tor_config {
+		Some(mut c) => {
+			c.skip_send_attempt = Some(args.skip_tor);
+			Some(c)
+		}
+		None => None,
+	};
+
 	let res =
 		try_slatepack_sync_workflow(&slate, &args.dest, tor_config, tor_sender, false, test_mode);
 
@@ -534,6 +544,7 @@ where
 				keychain_mask,
 				&slate,
 				args.dest.as_str(),
+				args.outfile,
 				true,
 				false,
 				is_pre_fork,
@@ -549,6 +560,7 @@ pub fn output_slatepack<L, C, K>(
 	keychain_mask: Option<&SecretKey>,
 	slate: &Slate,
 	dest: &str,
+	out_file_override: Option<String>,
 	lock: bool,
 	finalizing: bool,
 	is_pre_fork: bool,
@@ -580,7 +592,10 @@ where
 	// create a directory to which files will be output
 	let slate_dir = format!("{}/{}", tld, "slatepack");
 	let _ = std::fs::create_dir_all(slate_dir.clone());
-	let out_file_name = format!("{}/{}.{}.slatepack", slate_dir, slate.id, slate.state);
+	let out_file_name = match out_file_override {
+		None => format!("{}/{}.{}.slatepack", slate_dir, slate.id, slate.state),
+		Some(f) => f,
+	};
 
 	if lock {
 		controller::owner_single_use(None, keychain_mask, Some(owner_api), |api, m| {
@@ -710,6 +725,8 @@ where
 pub struct ReceiveArgs {
 	pub input_file: Option<String>,
 	pub input_slatepack_message: Option<String>,
+	pub skip_tor: bool,
+	pub outfile: Option<String>,
 }
 
 pub fn receive<L, C, K>(
@@ -735,6 +752,14 @@ where
 	let km = match keychain_mask.as_ref() {
 		None => None,
 		Some(&m) => Some(m.to_owned()),
+	};
+
+	let tor_config = match tor_config {
+		Some(mut c) => {
+			c.skip_send_attempt = Some(args.skip_tor);
+			Some(c)
+		}
+		None => None,
 	};
 
 	controller::foreign_single_use(owner_api.wallet_inst.clone(), km, |api| {
@@ -765,6 +790,7 @@ where
 				keychain_mask,
 				&slate,
 				&dest,
+				args.outfile,
 				false,
 				false,
 				slate.version_info.version < 4,
@@ -860,6 +886,7 @@ pub struct FinalizeArgs {
 	pub input_slatepack_message: Option<String>,
 	pub fluff: bool,
 	pub nopost: bool,
+	pub outfile: Option<String>,
 }
 
 pub fn finalize<L, C, K>(
@@ -932,6 +959,7 @@ where
 		keychain_mask,
 		&slate,
 		"",
+		args.outfile,
 		false,
 		true,
 		slate.version_info.version < 4,
@@ -942,12 +970,14 @@ where
 
 /// Issue Invoice Args
 pub struct IssueInvoiceArgs {
-	/// output file
+	/// Slatepack address
 	pub dest: String,
 	/// issue invoice tx args
 	pub issue_args: IssueInvoiceTxArgs,
 	/// whether to output a V4 slate
 	pub output_v4_slate: bool,
+	/// output file override
+	pub outfile: Option<String>,
 }
 
 pub fn issue_invoice_tx<L, C, K>(
@@ -969,14 +999,14 @@ where
 		};
 		match global::get_chain_type() {
 			global::ChainTypes::Mainnet => {
-				if cur_height < 80000 && !&args.output_v4_slate {
+				if cur_height < 80640 && !&args.output_v4_slate {
 					true
 				} else {
 					false
 				}
 			}
 			global::ChainTypes::Floonet => {
-				if cur_height < 180 && !&args.output_v4_slate {
+				if cur_height < 864 && !&args.output_v4_slate {
 					true
 				} else {
 					false
@@ -1003,6 +1033,7 @@ where
 		keychain_mask,
 		&slate,
 		args.dest.as_str(),
+		args.outfile,
 		false,
 		false,
 		is_pre_fork,
@@ -1019,6 +1050,8 @@ pub struct ProcessInvoiceArgs {
 	pub slate: Slate,
 	pub estimate_selection_strategies: bool,
 	pub ttl_blocks: Option<u64>,
+	pub skip_tor: bool,
+	pub outfile: Option<String>,
 }
 
 /// Process invoice
@@ -1093,6 +1126,14 @@ where
 		Ok(())
 	})?;
 
+	let tor_config = match tor_config {
+		Some(mut c) => {
+			c.skip_send_attempt = Some(args.skip_tor);
+			Some(c)
+		}
+		None => None,
+	};
+
 	let res = try_slatepack_sync_workflow(&slate, &dest, tor_config, None, true, test_mode);
 
 	match res {
@@ -1111,6 +1152,7 @@ where
 				keychain_mask,
 				&slate,
 				&dest,
+				args.outfile,
 				true,
 				false,
 				slate.version_info.version < 4,
@@ -1336,31 +1378,18 @@ where
 	K: keychain::Keychain + 'static,
 {
 	controller::owner_single_use(None, keychain_mask, Some(owner_api), |api, m| {
+		let stored_tx_slate = match api.get_stored_tx(m, Some(args.id), None)? {
+			None => {
+				error!(
+					"Transaction with id {} does not have transaction data. Not reposting.",
+					args.id
+				);
+				return Ok(());
+			}
+			Some(s) => s,
+		};
 		let (_, txs) = api.retrieve_txs(m, true, Some(args.id), None)?;
-		let mut stored_tx = None;
-		if txs.len() > 0 {
-			stored_tx = api.get_stored_tx(m, txs[0].tx_slate_id.unwrap())?;
-			if stored_tx.is_none() {
-				error!(
-					"Transaction with id {} does not have transaction data. Not reposting.",
-					args.id
-				);
-				return Ok(());
-			}
-		}
-
 		let (_, token_txs) = api.retrieve_token_txs(m, true, Some(args.id), None)?;
-		if token_txs.len() > 0 {
-			stored_tx = api.get_stored_tx(m, token_txs[0].tx_slate_id.unwrap())?;
-			if stored_tx.is_none() {
-				error!(
-					"Transaction with id {} does not have transaction data. Not reposting.",
-					args.id
-				);
-				return Ok(());
-			}
-		}
-
 		match args.dump_file {
 			None => {
 				if txs.len() > 0 && txs[0].confirmed {
@@ -1377,15 +1406,26 @@ where
 					);
 					return Ok(());
 				}
-				let mut slate = Slate::blank(2, false);
-				slate.tx = Some(stored_tx.unwrap());
-				api.post_tx(m, &slate, args.fluff)?;
-				info!("Reposted transaction at {}", args.id);
+				if libwallet::sig_is_blank(
+					&stored_tx_slate.tx.as_ref().unwrap().kernels()[0].excess_sig,
+				) {
+					error!("Transaction at {} has not been finalized.", args.id);
+					return Ok(());
+				}
+
+				match api.post_tx(m, &stored_tx_slate, args.fluff) {
+					Ok(_) => info!("Reposted transaction at {}", args.id),
+					Err(e) => error!("Could not repost transaction at {}. Reason: {}", args.id, e),
+				}
 				return Ok(());
 			}
 			Some(f) => {
 				let mut tx_file = File::create(f.clone())?;
-				tx_file.write_all(json::to_string(&stored_tx).unwrap().as_bytes())?;
+				tx_file.write_all(
+					json::to_string(&stored_tx_slate.tx.unwrap())
+						.unwrap()
+						.as_bytes(),
+				)?;
 				tx_file.sync_all()?;
 				info!("Dumped transaction data for tx {} to {}", args.id, f);
 				return Ok(());

@@ -27,12 +27,12 @@ sha3 = "0.8"
 
 # For beta release
 
- grin_core = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0-rc.1"}
- grin_keychain = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0-rc.1" }
- grin_chain = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0-rc.1" }
- grin_util = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0-rc.1" }
- grin_api = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0-rc.1" }
- grin_store = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0-rc.1" }
+ grin_core = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0"}
+ grin_keychain = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0" }
+ grin_chain = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0" }
+ grin_util = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0" }
+ grin_api = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0" }
+ grin_store = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0" }
 
 # For bleeding edge
 #grin_core = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }

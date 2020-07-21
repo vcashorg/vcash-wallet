@@ -1190,8 +1190,8 @@ checksum = "9b919933a397b79c37e33b77bb2aa3dc8eb6e165ad809e58ff75bc7db2e34574"
 
 [[package]]
 name = "grin_api"
-version = "4.0.0-rc.1"
-source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0-rc.1#4cab3488c98f8376a070b3f431d3d33dd7f83867"
+version = "4.0.0"
+source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0#ad62e757d3fe4ee535c99147f702f762930f8293"
 dependencies = [
  "bytes",
  "easy-jsonrpc-mw",
@@ -1223,8 +1223,8 @@ dependencies = [
 
 [[package]]
 name = "grin_chain"
-version = "4.0.0-rc.1"
-source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0-rc.1#4cab3488c98f8376a070b3f431d3d33dd7f83867"
+version = "4.0.0"
+source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0#ad62e757d3fe4ee535c99147f702f762930f8293"
 dependencies = [
  "bit-vec",
  "bitflags 1.2.1",
@@ -1247,8 +1247,8 @@ dependencies = [
 
 [[package]]
 name = "grin_core"
-version = "4.0.0-rc.1"
-source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0-rc.1#4cab3488c98f8376a070b3f431d3d33dd7f83867"
+version = "4.0.0"
+source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0#ad62e757d3fe4ee535c99147f702f762930f8293"
 dependencies = [
  "blake2-rfc",
  "byteorder",
@@ -1275,8 +1275,8 @@ dependencies = [
 
 [[package]]
 name = "grin_keychain"
-version = "4.0.0-rc.1"
-source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0-rc.1#4cab3488c98f8376a070b3f431d3d33dd7f83867"
+version = "4.0.0"
+source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0#ad62e757d3fe4ee535c99147f702f762930f8293"
 dependencies = [
  "blake2-rfc",
  "byteorder",
@@ -1297,8 +1297,8 @@ dependencies = [
 
 [[package]]
 name = "grin_p2p"
-version = "4.0.0-rc.1"
-source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0-rc.1#4cab3488c98f8376a070b3f431d3d33dd7f83867"
+version = "4.0.0"
+source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0#ad62e757d3fe4ee535c99147f702f762930f8293"
 dependencies = [
  "bitflags 1.2.1",
  "chrono",
@@ -1318,8 +1318,8 @@ dependencies = [
 
 [[package]]
 name = "grin_pool"
-version = "4.0.0-rc.1"
-source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0-rc.1#4cab3488c98f8376a070b3f431d3d33dd7f83867"
+version = "4.0.0"
+source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0#ad62e757d3fe4ee535c99147f702f762930f8293"
 dependencies = [
  "blake2-rfc",
  "chrono",
@@ -1352,8 +1352,8 @@ dependencies = [
 
 [[package]]
 name = "grin_store"
-version = "4.0.0-rc.1"
-source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0-rc.1#4cab3488c98f8376a070b3f431d3d33dd7f83867"
+version = "4.0.0"
+source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0#ad62e757d3fe4ee535c99147f702f762930f8293"
 dependencies = [
  "byteorder",
  "croaring-mw",
@@ -1372,8 +1372,8 @@ dependencies = [
 
 [[package]]
 name = "grin_util"
-version = "4.0.0-rc.1"
-source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0-rc.1#4cab3488c98f8376a070b3f431d3d33dd7f83867"
+version = "4.0.0"
+source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0#ad62e757d3fe4ee535c99147f702f762930f8293"
 dependencies = [
  "backtrace",
  "base64 0.12.3",

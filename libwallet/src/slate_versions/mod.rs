@@ -38,7 +38,7 @@ pub mod v4_bin;
 pub const CURRENT_SLATE_VERSION: u16 = 4;
 
 /// The grin block header this slate is intended to be compatible with
-pub const GRIN_BLOCK_HEADER_VERSION: u16 = 2;
+pub const GRIN_BLOCK_HEADER_VERSION: u16 = 3;
 
 /// Existing versions of the slate
 #[derive(EnumIter, Serialize, Deserialize, Clone, Debug, PartialEq, PartialOrd, Eq, Ord)]

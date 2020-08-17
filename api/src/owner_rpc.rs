@@ -174,9 +174,9 @@ pub trait OwnerRpc {
 				true,
 				[
 					{
-						"commit": "08e1da9e6dc4d6e808a718b2f110a991dd775d65ce5ae408a4e1f002a4961aa9e7",
+						"commit": "083fbf6c559dd0d0220a155afcdd99c1320b56681d4dbfb7d0cd4f92b28f79c60b",
 						"output": {
-							"commit": "08e1da9e6dc4d6e808a718b2f110a991dd775d65ce5ae408a4e1f002a4961aa9e7",
+							"commit": "083fbf6c559dd0d0220a155afcdd99c1320b56681d4dbfb7d0cd4f92b28f79c60b",
 							"height": "1",
 							"is_coinbase": true,
 							"key_id": "0300000000000000000000000000000000",
@@ -186,13 +186,13 @@ pub trait OwnerRpc {
 							"root_key_id": "0200000000000000000000000000000000",
 							"status": "Unspent",
 							"tx_log_entry": 0,
-							"value": "60000000000"
+							"value": "50000000000"
 						}
 					},
 					{
-						"commit": "087df32304c5d4ae8b2af0bc31e700019d722910ef87dd4eec3197b80b207e3045",
+						"commit": "095a9fd054e3f5d63302c8e1d44e14be686b363b542204207f8db5958ac69aede2",
 						"output": {
-							"commit": "087df32304c5d4ae8b2af0bc31e700019d722910ef87dd4eec3197b80b207e3045",
+							"commit": "095a9fd054e3f5d63302c8e1d44e14be686b363b542204207f8db5958ac69aede2",
 							"height": "2",
 							"is_coinbase": true,
 							"key_id": "0300000000000000000000000100000000",
@@ -202,7 +202,7 @@ pub trait OwnerRpc {
 							"root_key_id": "0200000000000000000000000000000000",
 							"status": "Unspent",
 							"tx_log_entry": 1,
-							"value": "60000000000"
+							"value": "50000000000"
 						}
 					}
 				]
@@ -251,14 +251,14 @@ pub trait OwnerRpc {
 		  true,
 		  [
 			{
-			  "amount_credited": "60000000000",
+			  "amount_credited": "50000000000",
 			  "amount_debited": "0",
 			  "confirmation_ts": "2019-01-15T16:01:26Z",
 			  "confirmed": true,
 			  "creation_ts": "2019-01-15T16:01:26Z",
 			  "fee": null,
 			  "id": 0,
-			  "kernel_excess": "0838e19c490038b10f051c9c190a9b1f96d59bbd242f5d3143f50630deb74342ed",
+			  "kernel_excess": "08d665d28da3da9b1ebd88b1572208f069f4c7d16bfe9ba5c159caea9ab42edaf8",
 			  "kernel_lookup_min_height": 1,
 			  "num_inputs": 0,
 			  "num_outputs": 1,
@@ -271,14 +271,14 @@ pub trait OwnerRpc {
 			  "tx_type": "ConfirmedCoinbase"
 			},
 			{
-			  "amount_credited": "60000000000",
+			  "amount_credited": "50000000000",
 			  "amount_debited": "0",
 			  "confirmation_ts": "2019-01-15T16:01:26Z",
 			  "confirmed": true,
 			  "creation_ts": "2019-01-15T16:01:26Z",
 			  "fee": null,
 			  "id": 1,
-			  "kernel_excess": "08cd9d890c0b6a004f700aa5939a1ce0488fe2a11fa33cf096b50732ceab0be1df",
+			  "kernel_excess": "092e8ed0e28bf524ed0349f444a0d307dce47bfbd93bf12c2f5b005410f10c4c80",
 			  "kernel_lookup_min_height": 2,
 			  "num_inputs": 0,
 			  "num_outputs": 1,
@@ -335,13 +335,14 @@ pub trait OwnerRpc {
 				{
 					"amount_awaiting_confirmation": "0",
 					"amount_awaiting_finalization": "0",
-					"amount_currently_spendable": "60000000000",
-					"amount_immature": "180000000000",
+					"amount_currently_spendable": "50000000000",
+					"amount_immature": "150000000000",
 					"amount_locked": "0",
 					"amount_reverted": "0",
 					"last_confirmed_height": "4",
 					"minimum_confirmations": "1",
-					"total": "240000000000"
+					"token_infos": [],
+					"total": "200000000000"
 				}
 			]
 		}
@@ -377,7 +378,7 @@ pub trait OwnerRpc {
 					"num_change_outputs": 1,
 					"selection_strategy_is_use_all": true,
 					"target_slate_version": null,
-					"payment_proof_recipient_address": "tgrin1xtxavwfgs48ckf3gk8wwgcndmn0nt4tvkl8a7ltyejjcy2mc6nfs9gm2lp",
+					"payment_proof_recipient_address": "tvcash10qlk22rxjap2ny8qltc2tl996kenxr3hhwuu6hrzs6tdq08yaqgqnrsy2l",
 					"ttl_blocks": null,
 					"send_args": null
 				}
@@ -397,13 +398,13 @@ pub trait OwnerRpc {
 					"id": "0436430c-2b02-624c-2032-570501212b00",
 					"off": "d202964900000000d302964900000000d402964900000000d502964900000000",
 					"proof": {
-						"raddr": "32cdd63928854f8b2628b1dce4626ddcdf35d56cb7cfdf7d64cca5822b78d4d3",
+						"raddr": "783f6528669742a990e0faf0a5fca5d5b3330e37bbb9cd5c628696d03ce4e810",
 						"saddr": "32cdd63928854f8b2628b1dce4626ddcdf35d56cb7cfdf7d64cca5822b78d4d3"
 					},
 					"sigs": [
 						{
 							"nonce": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
-							"xs": "023878ce845727f3a4ec76ca3f3db4b38a2d05d636b8c3632108b857fed63c96de"
+							"xs": "02e050f9d3279b87d6513d218c3a254ef94c8d3733c77f81cf41422b0d36370e38"
 						}
 					],
 					"sta": "S1",
@@ -492,7 +493,7 @@ pub trait OwnerRpc {
 						}
 					],
 					"sta": "I1",
-					"ver": "4:2"
+					"ver": "4:3"
 				},
 				"args": {
 					"src_acct_name": null,
@@ -519,26 +520,27 @@ pub trait OwnerRpc {
 			"Ok": {
 				"coms": [
 					{
-						"c": "08e1da9e6dc4d6e808a718b2f110a991dd775d65ce5ae408a4e1f002a4961aa9e7",
+						"c": "083fbf6c559dd0d0220a155afcdd99c1320b56681d4dbfb7d0cd4f92b28f79c60b",
 						"f": 1
 					},
 					{
-						"c": "094be57c91787fc2033d5d97fae099f1a6ddb37ea48370f1a138f09524c767fdd3",
-						"p": "1319630b26d02363861ebdb15514086dc8b0772b4bb63ef9b828704e0ac348efada6747dd7a29848138d630c7b403e573c9cde04be5d25f2d344db4b010d6b890dd6c54cc0911c0cadc7a8a225b2ec3f2dcac88189a17aa62257e969eef9de9172009d8e864e413f1953998b28531e580d3ea495a512d320e8d4ff50e7495a6c283c6e544d16364d34272805893526f1e3b6fd176ef4adc5671b165cf28efcfb8d25c0dfcd018a2c5e65beeb9201f3983194e5a521c0844d05c700654dfaed1b9b39dae08cc9afab9cb891256bc0237ad2ce78da8b44586580f52dd346dcafde5e471917f16e4c4b51e966e1946f13e31771503c85bb0f1b41d1c7fcc953e70af55400638a35e7f5610f9f4c5b881a35060a693deaf46e1839c54a8f7d2c626b05acd3450b72ae8f2e0f8721bcbbd8562141d3fef851c6ac3c8069fa6389389bc4fcba5e4fb49709a3b63a59ba96a82827dfbd6f16de849ef95f3114593d207aff6e030152929fa220b0c3b54ca419cfcbffb7a0106dd3154e858878c7d8f38cadcc376c502bdc50292b494484936d0846fc3fac10910962bca4ddcca5c80b458fd7df15e9a6c2f39b516425a2190a97c9d0e2e2f105ee29905f36e3a648a135ebf387d0bb2a6b61d95b215319d6dc9ee8b4b2798810fb6e01c007041b288c2b39e805c9af86c88dd4a380b6a346b4a0e67bba6aaac5acc70088ac3297486b90cfe371d9464552747a2f7680f42d5629fb09bed835382d842234712c0574c5b4f256c226e77602429983e4def71541cff80ccf4cd3b761685c91463c8e1c7bf828699c688509282b85e752424df3da670b3cfacdea2f66cfb804fecdf8b7eb056e8917fdae78d83c011964e3d5a0748873f817d0abf4b04c20452733eac35c318b96e100a5ace0f54085bd24f968b8fc5b276e0d7b134f01db50b3d2771cdcf1423d44"
+						"c": "09f9a5605b2e5c7697ab8a6e5ca125e2feaed1c32294487771bb3e544a20847178",
+						"p": "3f8b73a2d8de4737f8dca50f92e3e63cacc4bdf6fd4f65d05f6b9db4625e5a644c4300609b0283d87bb01b50864345f150689e66d1661ea59a8d55b63a45600f069496337e619e343ed238fd54563abcb77e38c924fdb628f9eb1b70e7b72d673db33872557142e04831402bbb2449deb070dddf0c4e04e77b3039d0d98de9ec5cabe95203563cc3919efe2e353348e560a948e361e3b05e76f80a6b1b672a3cc138d7891460b105b03f102cc962a0e554a07d725c35b3a93591249efdab2758077d0b8b192bbd8ca5393d8668d7eab02ee98c3441368b698ac558bceafa59f9d85a9b6b308023ae3263188a8cb535c180527ab6db19cf10d78e1e7d2d9eaa019d58b0068f4e3339922d3227cdd5a64fed640d47c47aa6ef03952ff8a394b125989084826fdf10cd731e0a22d9f6b309ef93c3eece89012abd97b479ba3c2f903610ee8d8086e476e81a68c41ba9010e223335d3a8c2744f56e4f1e0b070137650fc00ac33fbc35f80b7d709d4d24ae83a751cd2166ad9201d3d9054732b8c4e92bf32f9a1b7d149cfc32a2bc182ac4f8a95b27437eadcee6b7a4f74e635664e3f1715aad770115a8c0fe8c02176c3141e9a0a42b457f299f7546699419ccb2c02f7e52f3aebbbafb3dd06988113de6fbb6c534ede51886def92e64d24515984b9856a74410d769d80e30bccb69fb7663ef5a9fc38bcaa94ed3b9125a929f2c148336e03b8a35e073c86b8fb4cec559099604b325f4d77bc8ff55438e0fc9a13140eafbf116b803f33415f6f29ada0d400d508ca2804cd99157319d7c7186239fa61702c49b65fecf89ddd868efee7a90a5bfe2f587cd4256438763cedb3211e034bc15fcb76a3ad023f93883625ff81a52d2da5615cbb1bdb25dfb74d76289e98b27bf21d952e527a90b4c0add77a5eb901a15dcbf854f8b2dd0e99bc4819645e94b8"
 					}
 				],
 				"fee": "8000000",
 				"id": "0436430c-2b02-624c-2032-570501212b00",
-				"off": "9b6e26e78b49c7136ce70334dd83acb89c78f6c54cfab64ba62e598837241d36",
+				"off": "dbbb4697d03fe627370797ae2d37c18a8c9e47cef3a43da86881b542f0f1802a",
 				"sigs": [
 					{
 						"nonce": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
-						"part": "8f07ddd5e9f5179cff19486034181ed76505baaad53e5d994064127b56c5841bf1804f6fe8e55f5556bbd807fefbcd72b30d90cf708f8c56447acc63228274e6",
-						"xs": "023878ce845727f3a4ec76ca3f3db4b38a2d05d636b8c3632108b857fed63c96de"
+						"part": "8f07ddd5e9f5179cff19486034181ed76505baaad53e5d994064127b56c5841b24aa6e973189e4f62d0ef5d5ba8ce78de018967f2062c2b3285b3649cd3f76a0",
+						"xs": "02e050f9d3279b87d6513d218c3a254ef94c8d3733c77f81cf41422b0d36370e38"
 					}
 				],
 				"sta": "I2",
-				"ver": "4:2"
+				"token_coms": [],
+				"ver": "4:3"
 			}
 		}
 	}
@@ -567,7 +569,7 @@ pub trait OwnerRpc {
 		"params": {
 			"token": "d202964900000000d302964900000000d402964900000000d502964900000000",
 			"slate": {
-				"ver": "4:2",
+				"ver": "4:3",
 				"id": "0436430c-2b02-624c-2032-570501212b00",
 				"sta": "S1",
 				"off": "d202964900000000d302964900000000d402964900000000d502964900000000",
@@ -613,7 +615,7 @@ pub trait OwnerRpc {
 			"token": "d202964900000000d302964900000000d402964900000000d502964900000000",
 			"slate":
 			{
-				"ver": "4:2",
+				"ver": "4:3",
 				"id": "0436430c-2b02-624c-2032-570501212b00",
 				"sta": "S2",
 				"off": "a4052c9200000001a6052c9200000002ed564fab50b75fc5ea32ce052fc9bebf",
@@ -621,7 +623,7 @@ pub trait OwnerRpc {
 					{
 						"xs": "033bbe2a419ea2e9d6810a8d66552e709d1783ca50759a44dbaf63fc79c0164c4c",
 						"nonce": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
-						"part": "8f07ddd5e9f5179cff19486034181ed76505baaad53e5d994064127b56c5841b35fdfe55271f2ae73d75f58c70d1efb69b3384c7bc507d57e99e56de77e20874"
+						"part": "8f07ddd5e9f5179cff19486034181ed76505baaad53e5d994064127b56c5841b977dd98be29307b0fd322cff40437730a1007c7c0e7d0a2f05493531d1587812"
 					}
 				],
 				"coms": [
@@ -629,7 +631,8 @@ pub trait OwnerRpc {
 						"c": "099b48cfb1f80a2347dc89818449e68e76a3c6817a532a8e9ef2b4a5ccf4363850",
 						"p": "29701ceae262cac77b79b868c883a292e61e6de8192b868edcd1300b0973d91396b156ace6bd673402a303de10ddd8a5e6b7f17ba6557a574a672bd04cc273ab04ed8e2ca80bac483345c0ec843f521814ce1301ec9adc38956a12b4d948acce71295a4f52bcdeb8a1c9f2d6b2da5d731262a5e9c0276ef904df9ef8d48001420cd59f75a2f1ae5c7a1c7c6b9f140e7613e52ef9e249f29f9340b7efb80699e460164324616f98fd4cde3db52497c919e95222fffeacb7e65deca7e368a80ce713c19de7da5369726228ee336f5bd494538c12ccbffeb1b9bfd5fc8906d1c64245b516f103fa96d9c56975837652c1e0fa5803d7ccf1147d8f927e36da717f7ad79471dbe192f5f50f87a79fc3fe030dba569b634b92d2cf307993cce545633af263897cd7e6ebf4dcafb176d07358bdc38d03e45a49dfa9c8c6517cd68d167ffbf6c3b4de0e2dd21909cbad4c467b84e5700be473a39ac59c669d7c155c4bcab9b8026eea3431c779cd277e4922d2b9742e1f6678cbe869ec3b5b7ef4132ddb6cdd06cf27dbeb28be72b949fa897610e48e3a0d789fd2eea75abc97b3dc7e00e5c8b3d24e40c6f24112adb72352b89a2bef0599345338e9e76202a3c46efa6370952b2aca41aadbae0ea32531acafcdab6dd066d769ebf50cf4f3c0a59d2d5fa79600a207b9417c623f76ad05e8cccfcd4038f9448bc40f127ca7c0d372e46074e334fe49f5a956ec0056f4da601e6af80eb1a6c4951054869e665b296d8c14f344ca2dc5fdd5df4a3652536365a1615ad9b422165c77bf8fe65a835c8e0c41e070014eb66ef8c525204e990b3a3d663c1e42221b496895c37a2f0c1bf05e91235409c3fe3d89a9a79d6c78609ab18a463311911f71fa37bb73b15fcd38143d1404fd2ce81004dc7ff89cf1115dcc0c35ce1c1bf9941586fb959770f2618ccb7118a7"
 					}
-				]
+				],
+				"token_coms": []
 			}
 		}
 	}
@@ -675,7 +678,8 @@ pub trait OwnerRpc {
 					}
 				],
 				"sta": "S3",
-				"ver": "4:2"
+				"token_coms": []
+				"ver": "4:3"
 			}
 		}
 	}
@@ -702,38 +706,39 @@ pub trait OwnerRpc {
 				"ver": "4:2",
 				"id": "0436430c-2b02-624c-2032-570501212b00",
 				"sta": "S3",
-				"off": "750dbf4fd43b7f4cfd68d2698a522f3ff6e6a00ad9895b33f1ec46493b837b49",
+				"off": "d143cbb0533b855eb509b29ce4510d04655b631b141961180a7d1bc435074c06",
 				"fee": "7000000",
 				"sigs": [
 					{
 						"xs": "033bbe2a419ea2e9d6810a8d66552e709d1783ca50759a44dbaf63fc79c0164c4c",
 						"nonce": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
-						"part": "8f07ddd5e9f5179cff19486034181ed76505baaad53e5d994064127b56c5841b35fdfe55271f2ae73d75f58c70d1efb69b3384c7bc507d57e99e56de77e20874"
+						"part": "8f07ddd5e9f5179cff19486034181ed76505baaad53e5d994064127b56c5841b977dd98be29307b0fd322cff40437730a1007c7c0e7d0a2f05493531d1587812"
 					},
 					{
-						"xs": "030152d2d72e2dba7c6086ad49a219d9ff0dfe0fd993dcaea22e058c210033ce93",
+						"xs": "035451e65b8b7987ff485785c2d32e278fa45c4bdd5a70d944c714e4a75048dd68",
 						"nonce": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
-						"part": "8f07ddd5e9f5179cff19486034181ed76505baaad53e5d994064127b56c5841bdad934daa17db7e477c4eed90afed40d1117896df8c4f5861b6309a949878074"
+						"part": "8f07ddd5e9f5179cff19486034181ed76505baaad53e5d994064127b56c5841bd45d2dd4d6895d612b3c7e5a7fca80dd9214c77cec7c500b36ecac0f93e4124f"
 					}
 				],
 				"coms": [
 					{
 						"f": 1,
-						"c": "087df32304c5d4ae8b2af0bc31e700019d722910ef87dd4eec3197b80b207e3045"
+						"c": "095a9fd054e3f5d63302c8e1d44e14be686b363b542204207f8db5958ac69aede2"
 					},
 					{
 						"f": 1,
-						"c": "08e1da9e6dc4d6e808a718b2f110a991dd775d65ce5ae408a4e1f002a4961aa9e7"
+						"c": "083fbf6c559dd0d0220a155afcdd99c1320b56681d4dbfb7d0cd4f92b28f79c60b"
+					},
+					{
+						"c": "0878211b9c19f8cdaea542c24d9a248adb7b576e316cd21984cd183f2591baf613",
+						"p": "9fac84b36daaadf5cecfdccbf3ac7aab6b31f7cb4e067aabd5c63f250d73fb0aa73255ee05d06c616e8358e88a19df66ea809027bee4e2f75ae76cc606707de40335063851c2566afa5ffcdda997669b074fe3b66e1f969e4f11b37968c05d0d7457183f4e07632a255d1666e750ad2ef3cb224c78adface67168276237ac9435892e2fe888664c53a49f4aaf63bd8bebbc777a844bec7e73d1f30cd22511a40ee5fc1ae1fe41466910f5298d41b47470aa6dcffd1322c8809419196c1df7c16fb5282221da80133ff945701a3d8805176a0f18233fa8a900e104be8c8419e1e3e9692771ff8444144ad093e1f64cc1684120fc5495b3ff0cc9bca11ca89fa15b5c94e0c852016a3507667da6e3aed2dddfb8a875beb7ce1e321f0c3bfb8a977ac302ee14c1061284f3b2a0409df52e3a7214da371014767daeee0b91e8966efa6e6e259e036f0ce3d089ee0f4af563da829bbd9a4106a0c2a9093def0d91da42df7011eaef24c2be1cd8fac9af49ec7c69f911653ca217faa0ef895ced28f823c469b9430bc04d4ab628d7d4e6cd65a8dd7a314313666f0b12f2d2e6f48a8b18e4f95f56efe51fa09e634df480da8e9856079d4dd24c666b8e08b7b4bace91787248f65f13ff42ea61223dedf9a0da7ee5051f30fac94728179be4cbf762b308e7bbee19fa1a905195a9de6d72b9e964cae1b0b4f95a78174e8368068c83d2e4d73951ead186ed2110c4427a4039e17cd77c2d6c51de430fcd34542b996628a339e21d66f7a9a9b5c98a8a81a9e7508f8ab03c4aef09919798fc4d722c1d81556ecc9a5cd1cf972a4dc6d60ea619174f8404daddefc8d03b229793f8208308885719b91d359e4ee94e57b0f69b76e5f500f13739b1dd79470f55bde81f6683d26a6c2e6aee6a26b29579c380426b6c6914906b93bd272d36eaea192b0e4454a06f68b"
 					},
 					{
 						"c": "099b48cfb1f80a2347dc89818449e68e76a3c6817a532a8e9ef2b4a5ccf4363850",
 						"p": "29701ceae262cac77b79b868c883a292e61e6de8192b868edcd1300b0973d91396b156ace6bd673402a303de10ddd8a5e6b7f17ba6557a574a672bd04cc273ab04ed8e2ca80bac483345c0ec843f521814ce1301ec9adc38956a12b4d948acce71295a4f52bcdeb8a1c9f2d6b2da5d731262a5e9c0276ef904df9ef8d48001420cd59f75a2f1ae5c7a1c7c6b9f140e7613e52ef9e249f29f9340b7efb80699e460164324616f98fd4cde3db52497c919e95222fffeacb7e65deca7e368a80ce713c19de7da5369726228ee336f5bd494538c12ccbffeb1b9bfd5fc8906d1c64245b516f103fa96d9c56975837652c1e0fa5803d7ccf1147d8f927e36da717f7ad79471dbe192f5f50f87a79fc3fe030dba569b634b92d2cf307993cce545633af263897cd7e6ebf4dcafb176d07358bdc38d03e45a49dfa9c8c6517cd68d167ffbf6c3b4de0e2dd21909cbad4c467b84e5700be473a39ac59c669d7c155c4bcab9b8026eea3431c779cd277e4922d2b9742e1f6678cbe869ec3b5b7ef4132ddb6cdd06cf27dbeb28be72b949fa897610e48e3a0d789fd2eea75abc97b3dc7e00e5c8b3d24e40c6f24112adb72352b89a2bef0599345338e9e76202a3c46efa6370952b2aca41aadbae0ea32531acafcdab6dd066d769ebf50cf4f3c0a59d2d5fa79600a207b9417c623f76ad05e8cccfcd4038f9448bc40f127ca7c0d372e46074e334fe49f5a956ec0056f4da601e6af80eb1a6c4951054869e665b296d8c14f344ca2dc5fdd5df4a3652536365a1615ad9b422165c77bf8fe65a835c8e0c41e070014eb66ef8c525204e990b3a3d663c1e42221b496895c37a2f0c1bf05e91235409c3fe3d89a9a79d6c78609ab18a463311911f71fa37bb73b15fcd38143d1404fd2ce81004dc7ff89cf1115dcc0c35ce1c1bf9941586fb959770f2618ccb7118a7"
-					},
-					{
-						"c": "0812276cc788e6870612296d926cba9f0e7b9810670710b5a6e6f1ba006d395774",
-						"p": "284b9f9199411c6bbf7227eae15cc9fa7ed30534af3ecff85b0d016da329cae1f1edf79f01426434cb90afcc2f0a1fb296e5c51a91b5e57a1f0230fda4f8c5950e7986fa379b99d64b6039a86cc7e35e040ba192b781043959851268ca9874a918805ea958c84f7fee8d3ab4262f032f5a3f840ebcdd273b29be810114e6e86a959d8e4c080572e3ef249edd6ad68503ec3bc4486548520ea2775a41aea67aac99945fce9e7a7769d71f893ad7f0d0108692f6b6852312cae6f9857063055bda59dce521927c70040b8026a41b6517cae0a1c947ca244984a5c0adf7c6483b0939346c48f61cac37d501f46a1c5878b67cee0d0723f4eeadc9f5d71ed5e9f33b4294b58d3ebeefeaa13f20357599be549ce18e6e2eb1d50e1235ccc40ec9184c68a623741a7238ce69aa3a1d25156b3b7eb38fdd6fbe5473979feee3317df279c60d48a289826aa4c76dbce24d526890d4e6e2f83e80f674a1248fc1dc037d982009012ae1133f5e158ae6cdadb18c8d53e4a8ae5595c758782c67aa0c20f146d52085cf45a35794cec45702830f8952a69744718fbe6fe0d3da66e348dd3473a0aced7080fbf5494c3e7e141916f3b135b33277f998fcd9acfbca8709814866e9838a5dcda4c29422cf157293e6fc2ccc2d25423517843bd8e21c61ced72312c0b48814c312021b0d31598d2389b0b329baa1169922a4c34173dd5f540545be5066a0f291f1a870e1aaff94c19f0a855254882a17984baeda08e8ead53d1563e9ee4bc36742789cef4f3ab158054d7ddfe2a2b37b5a8a30be84ff7df9a7d758a9b76751a3622057721a3ec5b873582d0c91cd1febbc153662739854ea15c9903023c193c6b5768b55484108f897cdc47d13a9088b32558e57f12f5807668649c99a17b51905127340e8b49c42775f1b3cab072dfad33d33cc1e4ba5964d728ed0a905"
 					}
-				]
+				],
+				"token_coms": []
 			},
 		"fluff": false
 		}
@@ -827,6 +832,7 @@ pub trait OwnerRpc {
 				"id": "0436430c-2b02-624c-2032-570501212b00",
 				"sigs": [],
 				"sta": "S3",
+				"token_coms": [],
 				"ver": "4:3"
 			}
 		}
@@ -1404,7 +1410,7 @@ pub trait OwnerRpc {
 		"id": 1,
 		"jsonrpc": "2.0",
 		"result": {
-			"Ok": "tgrin1xtxavwfgs48ckf3gk8wwgcndmn0nt4tvkl8a7ltyejjcy2mc6nfs9gm2lp"
+			"Ok": "tvcash1xtxavwfgs48ckf3gk8wwgcndmn0nt4tvkl8a7ltyejjcy2mc6nfsk3qfya"
 		}
 	}
 	# "#
@@ -1466,7 +1472,7 @@ pub trait OwnerRpc {
 			"sender_index": 0,
 			"recipients": [],
 			"slate": {
-				"ver": "4:2",
+				"ver": "4:3",
 				"id": "0436430c-2b02-624c-2032-570501212b00",
 				"sta": "S1",
 				"off": "d202964900000000d302964900000000d402964900000000d502964900000000",
@@ -1489,7 +1495,7 @@ pub trait OwnerRpc {
 		"id": 1,
 		"jsonrpc": "2.0",
 		"result": {
-			"Ok": "BEGINSLATEPACK. xyfzdULuUuM5r3R kS68aywyCuYssPs Jf1JbvnBcK6NDDo ajiGAgh2SPx4t49 xtKuJE3BZCcSEue ksecMmbSoV2DQbX gGcmJniP9UadcmR N1KSc5FBhwAaUjy LXeYDP7EV7Cmsj4 pLaJdZTJTQbccUH 2zG8QTgoEiEWP5V T6rKst1TibmDAFm RRVHYDtskdYJb5G krqfpgN7RjvPfpm Z5ZFyz6ipAt5q9T 2HCjrTxkHdVi9js 22tr2Lx6iXT5vm8 JL6HhjwyFrSaEmN AjsBE8jgiaAABA6 GGZKwcXeXToMfRt nL9DeX1. ENDSLATEPACK."
+			"Ok": "BEGINSLATEPACK. 6VGFf5zVSJioXMA zCBBDZuKsokhNWP CKtdb3wFU4XPigK yo23JsEAfWKMfzd RHAspKLrV2E7DWW zECeUAci35d16MC ZPxz1M7dUaLhTyP uLCm3J6H2xudaZ3 HKFnfkh2TjJcYoN sHdqBBDWhxWwnXg My8aVPCHdH48Eim uw6x1A6M8mjMMUa ZxSTmn4TcTogbHK CcHzpEC8zVMxwnX NncqPTUaN8KBVNW LjRKynSVyDFzRH9 MMunDb4Mvopvy9G bUe9ZdceDJV46h4 A6RKHzspDt1LcKa FtS69owgTLYWGEk ZskKGByxj. ENDSLATEPACK."
 		}
 	}
 	# "#
@@ -1626,11 +1632,12 @@ pub trait OwnerRpc {
 		"result": {
 			"Ok": {
 				"amount": "60000000000",
-				"excess": "091f151170bfac881479bfb56c7012c52cd4ce4198ad661586374dd499925922fb",
-				"recipient_address": "tgrin10qlk22rxjap2ny8qltc2tl996kenxr3hhwuu6hrzs6tdq08yaqgqq6t83r",
-				"recipient_sig": "b9b1885a3f33297df32e1aa4db23220bd305da8ed92ff6873faf3ab2c116fea25e9d0e34bd4f567f022b88a37400821ffbcaec71c9a8c3a327c4626611886d0d",
-				"sender_address": "tgrin1xtxavwfgs48ckf3gk8wwgcndmn0nt4tvkl8a7ltyejjcy2mc6nfs9gm2lp",
-				"sender_sig": "611b92331e395c3d29871ac35b1fce78ec595e28ccbe8cc55452da40775e8e46d35a2e84eaffd986935da3275e34d46a8d777d02dabcf4339704c2a621da9700"
+				"excess": "09c7994f5187d34854d358a01f023ccb1391cd761cbd96d7e072d7aff5ef8003d3",
+				"recipient_address": "tvcash10qlk22rxjap2ny8qltc2tl996kenxr3hhwuu6hrzs6tdq08yaqgqnrsy2l",
+				"recipient_sig": "f6a5498d6ab6f118ad91ee86fa93afce235e098549505550b983a45fef9818c48933fdc0906b5791062eaf78d07731727d0167394636d694eaf90506831a650f",
+				"sender_address": "tvcash1xtxavwfgs48ckf3gk8wwgcndmn0nt4tvkl8a7ltyejjcy2mc6nfsk3qfya",
+				"sender_sig": "c0dfcb8117275914a30caae0ec38e7bf2fda97bd4afd36e1f7a0ce3a1eb276350a58405c937232f5515e3791812388223ac116a2877bd71e13c893b956d4720e",
+				"token_type": null
 			}
 		}
 	}
@@ -1659,11 +1666,11 @@ pub trait OwnerRpc {
 			"token": "d202964900000000d302964900000000d402964900000000d502964900000000",
 			"proof": {
 				"amount": "60000000000",
-				"excess": "091f151170bfac881479bfb56c7012c52cd4ce4198ad661586374dd499925922fb",
-				"recipient_address": "slatepack10qlk22rxjap2ny8qltc2tl996kenxr3hhwuu6hrzs6tdq08yaqgqnlumr7",
-				"recipient_sig": "b9b1885a3f33297df32e1aa4db23220bd305da8ed92ff6873faf3ab2c116fea25e9d0e34bd4f567f022b88a37400821ffbcaec71c9a8c3a327c4626611886d0d",
-				"sender_address": "slatepack1xtxavwfgs48ckf3gk8wwgcndmn0nt4tvkl8a7ltyejjcy2mc6nfskdvkdu",
-				"sender_sig": "611b92331e395c3d29871ac35b1fce78ec595e28ccbe8cc55452da40775e8e46d35a2e84eaffd986935da3275e34d46a8d777d02dabcf4339704c2a621da9700"
+				"excess": "09c7994f5187d34854d358a01f023ccb1391cd761cbd96d7e072d7aff5ef8003d3",
+				"recipient_address": "tvcash10qlk22rxjap2ny8qltc2tl996kenxr3hhwuu6hrzs6tdq08yaqgqnrsy2l",
+				"recipient_sig": "f6a5498d6ab6f118ad91ee86fa93afce235e098549505550b983a45fef9818c48933fdc0906b5791062eaf78d07731727d0167394636d694eaf90506831a650f",
+				"sender_address": "tvcash1xtxavwfgs48ckf3gk8wwgcndmn0nt4tvkl8a7ltyejjcy2mc6nfsk3qfya",
+				"sender_sig": "c0dfcb8117275914a30caae0ec38e7bf2fda97bd4afd36e1f7a0ce3a1eb276350a58405c937232f5515e3791812388223ac116a2877bd71e13c893b956d4720e"
 			}
 		},
 		"id": 1

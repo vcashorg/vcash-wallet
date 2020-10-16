@@ -1,6 +1,6 @@
 [package]
 name = "grin_wallet_libwallet"
-version = "4.0.1-alpha.1"
+version = "4.1.0-alpha.1"
 authors = ["Grin Developers <mimblewimble@lists.launchpad.net>"]
 description = "Simple, private and scalable cryptocurrency implementation based on the MimbleWimble chain format."
 license = "Apache-2.0"
@@ -24,7 +24,7 @@ chrono = { version = "0.4.11", features = ["serde"] }
 lazy_static = "1"
 strum = "0.18"
 strum_macros = "0.18"
-ed25519-dalek = "1.0.0-pre.3"
+ed25519-dalek = "1.0.0-pre.4"
 x25519-dalek = "0.6"
 base64 = "0.9"
 regex = "1.3"
@@ -36,6 +36,6 @@ secrecy = "0.6"
 bech32 = "0.7"
 byteorder = "1.3"
 
-grin_wallet_util = { path = "../util", version = "4.0.1-alpha.1" }
-grin_wallet_config = { path = "../config", version = "4.0.1-alpha.1" }
+grin_wallet_util = { path = "../util", version = "4.1.0-alpha.1" }
+grin_wallet_config = { path = "../config", version = "4.1.0-alpha.1" }
 

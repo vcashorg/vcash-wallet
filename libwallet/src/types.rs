@@ -56,11 +56,11 @@ where
 	K: Keychain + 'a,
 {
 	/// Sets the top level system wallet directory
-	/// default is assumed to be ~/.grin/main/wallet_data (or floonet equivalent)
+	/// default is assumed to be ~/.grin/main/wallet_data (or testnet equivalent)
 	fn set_top_level_directory(&mut self, dir: &str) -> Result<(), Error>;
 
 	/// Sets the top level system wallet directory
-	/// default is assumed to be ~/.grin/main/wallet_data (or floonet equivalent)
+	/// default is assumed to be ~/.grin/main/wallet_data (or testnet equivalent)
 	fn get_top_level_directory(&self) -> Result<String, Error>;
 
 	/// Output a grin-wallet.toml file into the current top-level system wallet directory
@@ -771,8 +771,6 @@ pub struct Context {
 	pub fee: u64,
 	/// Payment proof sender address derivation path, if needed
 	pub payment_proof_derivation_index: Option<u32>,
-	/// whether this was an invoice transaction
-	pub is_invoice: bool,
 	/// for invoice I2 Only, store the tx excess so we can
 	/// remove it from the slate on return
 	pub calculated_excess: Option<pedersen::Commitment>,
@@ -786,7 +784,6 @@ impl Context {
 		token_sec_key: SecretKey,
 		parent_key_id: &Identifier,
 		use_test_rng: bool,
-		is_invoice: bool,
 	) -> Context {
 		let sec_nonce = match use_test_rng {
 			false => aggsig::create_secnonce(secp).unwrap(),
@@ -806,7 +803,6 @@ impl Context {
 			token_input_ids: vec![],
 			fee: 0,
 			payment_proof_derivation_index: None,
-			is_invoice,
 			calculated_excess: None,
 		}
 	}

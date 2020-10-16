@@ -34,6 +34,7 @@ use ed25519_dalek::Keypair as DalekKeypair;
 use ed25519_dalek::PublicKey as DalekPublicKey;
 use ed25519_dalek::SecretKey as DalekSecretKey;
 use ed25519_dalek::Signature as DalekSignature;
+use ed25519_dalek::{Signer, Verifier};
 
 use crate::types::TokenTxLogEntryType;
 // static for incrementing test UUIDs
@@ -223,7 +224,6 @@ where
 			num_change_outputs,
 			selection_strategy_is_use_all,
 			parent_key_id.clone(),
-			!is_initiator,
 			use_test_rng,
 		)?,
 		false => selection::build_send_tx(
@@ -237,7 +237,6 @@ where
 			num_change_outputs,
 			selection_strategy_is_use_all,
 			parent_key_id.clone(),
-			!is_initiator,
 			use_test_rng,
 		)?,
 	};
@@ -291,7 +290,6 @@ where
 		slate,
 		current_height,
 		parent_key_id.clone(),
-		is_initiator,
 		use_test_rng,
 	)?;
 
@@ -827,21 +825,21 @@ mod test {
 
 		let tx1 = build::transaction(
 			KernelFeatures::Plain { fee: 0 },
-			vec![build::output(105, key_id1.clone())],
+			&[build::output(105, key_id1.clone())],
 			&keychain,
 			&builder,
 		)
 		.unwrap();
 		let tx2 = build::transaction(
 			KernelFeatures::Plain { fee: 0 },
-			vec![build::input(105, key_id1.clone())],
+			&[build::input(105, key_id1.clone())],
 			&keychain,
 			&builder,
 		)
 		.unwrap();
 
-		assert_eq!(tx1.outputs()[0].features, tx2.inputs()[0].features);
-		assert_eq!(tx1.outputs()[0].commitment(), tx2.inputs()[0].commitment());
+		let inputs: Vec<_> = tx2.inputs().into();
+		assert_eq!(tx1.outputs()[0].commitment(), inputs[0].commitment());
 	}
 
 	#[test]

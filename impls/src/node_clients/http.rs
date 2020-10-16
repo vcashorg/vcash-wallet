@@ -486,7 +486,8 @@ impl NodeClient for HTTPNodeClient {
 
 		let params = json!([start_index, end_index, max_outputs, Some(true)]);
 		let res = self.send_json_request::<OutputListing>("get_unspent_outputs", &params)?;
-		for out in res.outputs {
+		// We asked for unspent outputs via the api but defensively filter out spent outputs just in case.
+		for out in res.outputs.into_iter().filter(|out| out.spent == false) {
 			let is_coinbase = match out.output_type {
 				api::OutputType::Coinbase => true,
 				_ => false,
@@ -614,5 +615,71 @@ impl NodeClient for HTTPNodeClient {
 		let res = self.send_json_request::<OutputListing>("get_token_pmmr_indices", &params)?;
 
 		Ok((res.last_retrieved_index, res.highest_index))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::core::core::{KernelFeatures, OutputFeatures, OutputIdentifier};
+	use crate::core::libtx::build;
+	use crate::core::libtx::ProofBuilder;
+	use crate::keychain::{ExtKeychain, Keychain};
+
+	// JSON api for "push_transaction" between wallet->node currently only supports "feature and commit" inputs.
+	// We will need to revisit this if we decide to support "commit only" inputs (no features) at wallet level.
+	fn tx1i1o_v2_compatible() -> Transaction {
+		let keychain = ExtKeychain::from_random_seed(false).unwrap();
+		let builder = ProofBuilder::new(&keychain);
+		let key_id1 = ExtKeychain::derive_key_id(1, 1, 0, 0, 0);
+		let key_id2 = ExtKeychain::derive_key_id(1, 2, 0, 0, 0);
+		let tx = build::transaction(
+			KernelFeatures::Plain { fee: 2 },
+			&[build::input(5, key_id1), build::output(3, key_id2)],
+			&keychain,
+			&builder,
+		)
+		.unwrap();
+
+		let inputs: Vec<_> = tx.inputs().into();
+		let inputs: Vec<_> = inputs
+			.iter()
+			.map(|input| OutputIdentifier {
+				features: OutputFeatures::Plain,
+				commit: input.commitment(),
+			})
+			.collect();
+		Transaction {
+			body: tx.body.replace_inputs(inputs.as_slice().into()),
+			..tx
+		}
+	}
+
+	// Wallet will "push" a transaction to node, serializing the transaction as json.
+	// We are testing the json structure is what we expect here.
+	#[test]
+	fn test_transaction_json_ser_deser() {
+		let tx1 = tx1i1o_v2_compatible();
+		let value = serde_json::to_value(&tx1).unwrap();
+
+		assert!(value["offset"].is_string());
+		assert_eq!(value["body"]["inputs"][0]["features"], "Plain");
+		assert!(value["body"]["inputs"][0]["commit"].is_string());
+		assert_eq!(value["body"]["outputs"][0]["features"], "Plain");
+		assert!(value["body"]["outputs"][0]["commit"].is_string());
+		assert!(value["body"]["outputs"][0]["proof"].is_string());
+
+		// Note: Tx kernel "features" serialize in a slightly unexpected way.
+		assert_eq!(value["body"]["kernels"][0]["features"]["Plain"]["fee"], 2);
+		assert!(value["body"]["kernels"][0]["excess"].is_string());
+		assert!(value["body"]["kernels"][0]["excess_sig"].is_string());
+
+		let tx2: Transaction = serde_json::from_value(value).unwrap();
+		assert_eq!(tx1, tx2);
+
+		let str = serde_json::to_string(&tx1).unwrap();
+		println!("{}", str);
+		let tx2: Transaction = serde_json::from_str(&str).unwrap();
+		assert_eq!(tx1, tx2);
 	}
 }

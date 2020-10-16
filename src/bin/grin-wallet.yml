@@ -3,9 +3,9 @@ about: Lightweight implementation of the MimbleWimble protocol.
 author: The Vcash Team
 
 args:
-  - floonet:
-      help: Run Vcash against the Floonet (as opposed to mainnet)
-      long: floonet
+  - testnet:
+      help: Run Vcash against the Testnet (as opposed to mainnet)
+      long: testnet
       takes_value: false
   - usernet:
       help: Run Vcash as a local-only network. Doesn't block peer connections but will not connect to any peer or seed
@@ -108,7 +108,7 @@ subcommands:
             help: Minimum number of confirmations required for an output to be spendable
             short: c
             long: min_conf
-            default_value: "1"
+            default_value: "3"
             takes_value: true
         - selection_strategy:
             help: Coin/Output selection strategy.
@@ -161,11 +161,6 @@ subcommands:
             short: u
             long: outfile
             takes_value: true
-        #TODO: Remove HF3
-        - v4:
-            help: Output a V4 slate prior to HF3 block
-            long: v4
-            takes_value: false
   - unpack:
       about: Unpack and display an armored Slatepack Message, decrypting if possible
       args:
@@ -228,11 +223,6 @@ subcommands:
             short: u
             long: outfile
             takes_value: true
-       #TODO: Remove HF3
-        - v4:
-            help: Output a V4 slate prior to HF3 block
-            long: v4
-            takes_value: false
   - pay:
       about: Spend coins to pay the provided invoice transaction
       args:
@@ -240,7 +230,7 @@ subcommands:
             help: Minimum number of confirmations required for an output to be spendable
             short: c
             long: min_conf
-            default_value: "1"
+            default_value: "3"
             takes_value: true
         - selection_strategy:
             help: Coin/Output selection strategy.
@@ -343,7 +333,7 @@ subcommands:
             help: Minimum number of confirmations required for an output to be spendable
             short: c
             long: min_conf
-            default_value: "1"
+            default_value: "3"
             takes_value: true
   - init:
       about: Initialize a new wallet seed file and database

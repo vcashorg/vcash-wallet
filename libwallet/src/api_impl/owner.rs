@@ -35,6 +35,7 @@ use crate::{
 use crate::{Error, ErrorKind};
 use ed25519_dalek::PublicKey as DalekPublicKey;
 use ed25519_dalek::SecretKey as DalekSecretKey;
+use ed25519_dalek::Verifier;
 
 use std::convert::TryFrom;
 use std::sync::mpsc::Sender;
@@ -80,7 +81,6 @@ where
 
 /// Retrieve the slatepack address for the current parent key at
 /// the given index
-/// set active account
 pub fn get_slatepack_address<'a, L, C, K>(
 	wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
 	keychain_mask: Option<&SecretKey>,
@@ -100,7 +100,6 @@ where
 
 /// Retrieve the decryption key for the current parent key
 /// the given index
-/// set active account
 pub fn get_slatepack_secret_key<'a, L, C, K>(
 	wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
 	keychain_mask: Option<&SecretKey>,
@@ -173,7 +172,7 @@ where
 			recipients: vec![],
 			dec_key: None,
 		});
-		let slatepack = packer.deser_slatepack(slatepack.as_bytes().to_vec(), true)?;
+		let slatepack = packer.deser_slatepack(slatepack.as_bytes(), true)?;
 		return packer.get_slate(&slatepack);
 	} else {
 		for index in secret_indices {
@@ -187,7 +186,7 @@ where
 				recipients: vec![],
 				dec_key: (&dec_key).as_ref(),
 			});
-			let res = packer.deser_slatepack(slatepack.as_bytes().to_vec(), true);
+			let res = packer.deser_slatepack(slatepack.as_bytes(), true);
 			let slatepack = match res {
 				Ok(sp) => sp,
 				Err(_) => {
@@ -224,7 +223,7 @@ where
 		dec_key: None,
 	});
 	if secret_indices.is_empty() {
-		packer.deser_slatepack(slatepack.as_bytes().to_vec(), false)
+		packer.deser_slatepack(slatepack.as_bytes(), false)
 	} else {
 		for index in secret_indices {
 			let dec_key = Some(get_slatepack_secret_key(
@@ -237,7 +236,7 @@ where
 				recipients: vec![],
 				dec_key: (&dec_key).as_ref(),
 			});
-			let res = packer.deser_slatepack(slatepack.as_bytes().to_vec(), true);
+			let res = packer.deser_slatepack(slatepack.as_bytes(), true);
 			let slatepack = match res {
 				Ok(sp) => sp,
 				Err(_) => {
@@ -246,7 +245,7 @@ where
 			};
 			return Ok(slatepack);
 		}
-		packer.deser_slatepack(slatepack.as_bytes().to_vec(), false)
+		packer.deser_slatepack(slatepack.as_bytes(), false)
 	}
 }
 
@@ -729,9 +728,7 @@ where
 		batch.commit()?;
 	}
 
-	if slate.is_compact() {
-		slate.compact()?;
-	}
+	slate.compact()?;
 
 	Ok(slate)
 }
@@ -791,9 +788,7 @@ where
 		batch.commit()?;
 	}
 
-	if slate.is_compact() {
-		slate.compact()?;
-	}
+	slate.compact()?;
 
 	Ok(slate)
 }
@@ -861,9 +856,7 @@ where
 	}
 
 	// if this is compact mode, we need to create the transaction now
-	if ret_slate.is_compact() {
-		ret_slate.tx = Some(Transaction::empty());
-	}
+	ret_slate.tx = Some(Slate::empty_transaction());
 
 	// if self sending, make sure to store 'initiator' keys
 	let context_res = w.get_private_context(keychain_mask, slate.id.as_bytes());
@@ -891,7 +884,6 @@ where
 	if let Ok(c) = context_res {
 		context.initial_sec_key = c.initial_sec_key;
 		context.initial_sec_nonce = c.initial_sec_nonce;
-		context.is_invoice = c.is_invoice;
 		context.fee = c.fee;
 		context.amount = c.amount;
 		for o in c.output_ids.iter() {
@@ -902,12 +894,8 @@ where
 		}
 	}
 
-	// adjust offset with inputs, repopulate inputs (initiator needs them for now)
-	// TODO: Revisit post-HF3
-	if ret_slate.is_compact() {
-		tx::sub_inputs_from_offset(&mut *w, keychain_mask, &context, &mut ret_slate)?;
-		selection::repopulate_tx(&mut *w, keychain_mask, &mut ret_slate, &context, false)?;
-	}
+	tx::sub_inputs_from_offset(&mut *w, keychain_mask, &context, &mut ret_slate)?;
+	selection::repopulate_tx(&mut *w, keychain_mask, &mut ret_slate, &context, false)?;
 
 	// Save the aggsig context in our DB for when we
 	// recieve the transaction back
@@ -918,15 +906,13 @@ where
 	}
 
 	// Can remove amount as well as other sig data now
-	if ret_slate.is_compact() {
-		ret_slate.amount = 0;
-		ret_slate.remove_other_sigdata(
-			&keychain,
-			&context.sec_nonce,
-			&context.sec_key,
-			&context.token_sec_key,
-		)?;
-	}
+	ret_slate.amount = 0;
+	ret_slate.remove_other_sigdata(
+		&keychain,
+		&context.sec_nonce,
+		&context.sec_key,
+		&context.token_sec_key,
+	)?;
 
 	ret_slate.state = SlateState::Invoice2;
 	Ok(ret_slate)
@@ -944,16 +930,20 @@ where
 	K: Keychain + 'a,
 {
 	let context = w.get_private_context(keychain_mask, slate.id.as_bytes())?;
-	let mut sl = slate.clone();
 	let mut excess_override = None;
-	if sl.is_compact() && sl.tx == None {
-		// attempt to repopulate if we're the initiator
-		sl.tx = Some(Transaction::empty());
+
+	let mut sl = slate.clone();
+
+	if sl.tx == None {
+		sl.tx = Some(Slate::empty_transaction());
 		selection::repopulate_tx(&mut *w, keychain_mask, &mut sl, &context, true)?;
-	} else if sl.participant_data.len() == 1 {
+	}
+
+	if slate.participant_data.len() == 1 {
 		// purely for invoice workflow, payer needs the excess back temporarily for storage
 		excess_override = context.calculated_excess;
 	}
+
 	let height = w.w2n_client().get_chain_tip()?.0;
 	selection::lock_tx_context(
 		&mut *w,
@@ -963,48 +953,6 @@ where
 		&context,
 		excess_override,
 	)
-}
-
-/// Finalize slate
-pub fn finalize_tx<'a, T: ?Sized, C, K>(
-	w: &mut T,
-	keychain_mask: Option<&SecretKey>,
-	slate: &Slate,
-) -> Result<Slate, Error>
-where
-	T: WalletBackend<'a, C, K>,
-	C: NodeClient + 'a,
-	K: Keychain + 'a,
-{
-	let mut sl = slate.clone();
-	check_ttl(w, &sl)?;
-	let context = w.get_private_context(keychain_mask, sl.id.as_bytes())?;
-	let parent_key_id = w.parent_key_id();
-
-	// since we're now actually inserting our inputs, pick an offset and adjust
-	// our contribution to the excess by offset amount
-	// TODO: Post HF3, this should allow for inputs to be picked at this stage
-	// as opposed to locking them prior to this stage, as the excess to this point
-	// will just be the change output
-
-	if sl.is_compact() {
-		tx::sub_inputs_from_offset(&mut *w, keychain_mask, &context, &mut sl)?;
-		selection::repopulate_tx(&mut *w, keychain_mask, &mut sl, &context, true)?;
-	}
-
-	tx::complete_tx(&mut *w, keychain_mask, &mut sl, &context)?;
-	tx::verify_slate_payment_proof(&mut *w, keychain_mask, &parent_key_id, &context, &sl)?;
-	tx::update_stored_tx(&mut *w, keychain_mask, &context, &sl, false)?;
-	{
-		let mut batch = w.batch(keychain_mask)?;
-		batch.delete_private_context(sl.id.as_bytes())?;
-		batch.commit()?;
-	}
-	sl.state = SlateState::Standard3;
-	if sl.is_compact() {
-		sl.amount = 0;
-	}
-	Ok(sl)
 }
 
 /// cancel tx
@@ -1034,6 +982,45 @@ where
 	wallet_lock!(wallet_inst, w);
 	let parent_key_id = w.parent_key_id();
 	tx::cancel_tx(&mut **w, keychain_mask, &parent_key_id, tx_id, tx_slate_id)
+}
+
+/// Finalize slate
+pub fn finalize_tx<'a, T: ?Sized, C, K>(
+	w: &mut T,
+	keychain_mask: Option<&SecretKey>,
+	slate: &Slate,
+) -> Result<Slate, Error>
+where
+	T: WalletBackend<'a, C, K>,
+	C: NodeClient + 'a,
+	K: Keychain + 'a,
+{
+	let mut sl = slate.clone();
+	check_ttl(w, &sl)?;
+	let context = w.get_private_context(keychain_mask, sl.id.as_bytes())?;
+	let parent_key_id = w.parent_key_id();
+
+	// since we're now actually inserting our inputs, pick an offset and adjust
+	// our contribution to the excess by offset amount
+	// TODO: Post HF3, this should allow for inputs to be picked at this stage
+	// as opposed to locking them prior to this stage, as the excess to this point
+	// will just be the change output
+
+	tx::sub_inputs_from_offset(&mut *w, keychain_mask, &context, &mut sl)?;
+	selection::repopulate_tx(&mut *w, keychain_mask, &mut sl, &context, true)?;
+
+	tx::complete_tx(&mut *w, keychain_mask, &mut sl, &context)?;
+	tx::verify_slate_payment_proof(&mut *w, keychain_mask, &parent_key_id, &context, &sl)?;
+	tx::update_stored_tx(&mut *w, keychain_mask, &context, &sl, false)?;
+	{
+		let mut batch = w.batch(keychain_mask)?;
+		batch.delete_private_context(sl.id.as_bytes())?;
+		batch.commit()?;
+	}
+	sl.state = SlateState::Standard3;
+	sl.amount = 0;
+
+	Ok(sl)
 }
 
 /// get stored tx
@@ -1193,25 +1180,6 @@ where
 			})
 		}
 	}
-}
-
-/// return whether slate was an invoice tx
-pub fn context_is_invoice<'a, L, C, K>(
-	wallet_inst: Arc<Mutex<Box<dyn WalletInst<'a, L, C, K>>>>,
-	keychain_mask: Option<&SecretKey>,
-	slate: &Slate,
-) -> Result<bool, Error>
-where
-	L: WalletLCProvider<'a, C, K>,
-	C: NodeClient + 'a,
-	K: Keychain + 'a,
-{
-	let context = {
-		wallet_lock!(wallet_inst, w);
-		let context = w.get_private_context(keychain_mask, slate.id.as_bytes())?;
-		context
-	};
-	Ok(context.is_invoice)
 }
 
 /// Experimental, wrap the entire definition of how a wallet's state is updated

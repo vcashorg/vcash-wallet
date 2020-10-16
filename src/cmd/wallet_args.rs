@@ -31,7 +31,6 @@ use grin_wallet_libwallet::{IssueInvoiceTxArgs, NodeClient, WalletInst, WalletLC
 use grin_wallet_util::grin_core as core;
 use grin_wallet_util::grin_core::core::amount_to_hr_string;
 use grin_wallet_util::grin_keychain as keychain;
-use grin_wallet_util::OnionV3Address;
 use linefeed::terminal::Signal;
 use linefeed::{Interface, ReadResult};
 use rpassword;
@@ -152,7 +151,7 @@ fn prompt_slatepack() -> Result<String, ParseError> {
 				}
 			}
 			ReadResult::Input(line) => {
-				if SlatepackArmor::decode(&line).is_ok() {
+				if SlatepackArmor::decode(line.as_bytes()).is_ok() {
 					message = line;
 					break;
 				} else {
@@ -536,9 +535,6 @@ pub fn parse_send_args(args: &ArgMatches) -> Result<command::SendArgs, ParseErro
 	// max_outputs
 	let max_outputs = 500;
 
-	// TODO: Remove HF3
-	let output_v4_slate = args.is_present("v4");
-
 	// target slate version to create/send
 	let target_slate_version = {
 		match args.is_present("slate_version") {
@@ -551,27 +547,15 @@ pub fn parse_send_args(args: &ArgMatches) -> Result<command::SendArgs, ParseErro
 	};
 
 	let payment_proof_address = {
-		match args.is_present("request_payment_proof") {
-			true => match OnionV3Address::try_from(dest) {
-				Ok(a) => Some(SlatepackAddress::try_from(a).unwrap()),
+		match args.is_present("no_payment_proof") {
+			false => match SlatepackAddress::try_from(dest) {
+				Ok(a) => Some(a),
 				Err(_) => {
-					let addr = match parse_required(args, "dest") {
-						Ok(a) => a,
-						Err(_) => {
-							let msg = format!("Destination Slatepack address must be provided (-d) if payment proof is requested");
-							return Err(ParseError::ArgumentError(msg));
-						}
-					};
-					match SlatepackAddress::try_from(addr) {
-						Ok(a) => Some(a),
-						Err(e) => {
-							let msg = format!("Invalid slatepack address: {:?}", e);
-							return Err(ParseError::ArgumentError(msg));
-						}
-					}
+					println!("No recipient Slatepack address or provided address invalid. No payment proof will be requested.");
+					None
 				}
 			},
-			false => None,
+			true => None,
 		}
 	};
 
@@ -590,7 +574,6 @@ pub fn parse_send_args(args: &ArgMatches) -> Result<command::SendArgs, ParseErro
 		payment_proof_address,
 		ttl_blocks,
 		target_slate_version: target_slate_version,
-		output_v4_slate,
 		outfile,
 		skip_tor: args.is_present("manual"),
 	})
@@ -718,9 +701,6 @@ pub fn parse_issue_invoice_args(
 		false => None,
 	};
 
-	// TODO: Remove HF3
-	let output_v4_slate = args.is_present("v4");
-
 	// target slate version to create
 	let target_slate_version = {
 		match args.is_present("slate_version") {
@@ -742,7 +722,6 @@ pub fn parse_issue_invoice_args(
 
 	Ok(command::IssueInvoiceArgs {
 		dest: dest.into(),
-		output_v4_slate,
 		issue_args: IssueInvoiceTxArgs {
 			dest_acct_name: None,
 			token_type: None,

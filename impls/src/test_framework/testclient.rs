@@ -196,7 +196,7 @@ where
 
 		super::award_block_to_wallet(
 			&self.chain,
-			vec![&tx],
+			&[tx],
 			dest_wallet,
 			(&dest_wallet_mask).as_ref(),
 		)?;
@@ -282,7 +282,7 @@ where
 			}
 			let c = util::from_hex(o_str.as_str()).unwrap();
 			let commit = Commitment::from_vec(c);
-			let out = super::get_output_local(&self.chain.clone(), &commit);
+			let out = super::get_output_local(&self.chain.clone(), commit);
 			if let Some(o) = out {
 				outputs.push(o);
 			}

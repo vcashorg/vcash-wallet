@@ -888,7 +888,9 @@ where
 								}
 							}
 						} else {
-							return Ok(slate);
+							self.tx_lock_outputs(keychain_mask, &s)?;
+							let ret_slate = self.finalize_tx(keychain_mask, &s)?;
+							return Ok(ret_slate);
 						}
 					}
 					Ok(None) => Ok(slate),
@@ -1595,7 +1597,7 @@ where
 	/// * `chain_type`: The chain type to use in creation of the configuration file. This can be
 	///     * `AutomatedTesting`
 	///     * `UserTesting`
-	///     * `Floonet`
+	///     * `Testnet`
 	///     * `Mainnet`
 	///
 	/// # Returns
@@ -2506,17 +2508,6 @@ where
 		proof: &PaymentProof,
 	) -> Result<(bool, bool), Error> {
 		owner::verify_payment_proof(self.wallet_inst.clone(), keychain_mask, proof)
-	}
-
-	/// Return whether this transaction is marked as invoice in the context
-	// TODO: Remove post HF3
-	// This will be removed once state is added to slate
-	pub fn context_is_invoice(
-		&self,
-		keychain_mask: Option<&SecretKey>,
-		slate: &Slate,
-	) -> Result<bool, Error> {
-		owner::context_is_invoice(self.wallet_inst.clone(), keychain_mask, slate)
 	}
 }
 

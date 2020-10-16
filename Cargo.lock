@@ -61,7 +61,7 @@ checksum = "cfd7e7ae3f9a1fb5c03b389fc6bb9a51400d0c13053f0dca698c832bfd893a0d"
 dependencies = [
  "block-cipher-trait",
  "byteorder",
- "opaque-debug",
+ "opaque-debug 0.2.3",
 ]
 
 [[package]]
@@ -71,7 +71,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f70a6b5f971e473091ab7cfb5ffac6cde81666c4556751d8d5620ead8abf100"
 dependencies = [
  "block-cipher-trait",
- "opaque-debug",
+ "opaque-debug 0.2.3",
  "stream-cipher",
 ]
 
@@ -92,7 +92,7 @@ dependencies = [
  "c2-chacha",
  "chacha20poly1305",
  "cookie-factory",
- "curve25519-dalek",
+ "curve25519-dalek 2.1.0",
  "hkdf",
  "hmac 0.7.1",
  "nom 5.1.2",
@@ -359,6 +359,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "block-buffer"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4152116fd6e9dadb291ae18fc1ec3575ed6d84c29642d97890f4b4a3417297e4"
+dependencies = [
+ "generic-array 0.14.4",
+]
+
+[[package]]
 name = "block-cipher-trait"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -394,7 +403,7 @@ checksum = "6aeb80d00f2688459b8542068abd974cfb101e7a82182414a99b5026c0d85cc3"
 dependencies = [
  "block-cipher-trait",
  "byteorder",
- "opaque-debug",
+ "opaque-debug 0.2.3",
 ]
 
 [[package]]
@@ -557,15 +566,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "clear_on_drop"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9cc5db465b294c3fa986d5bbb0f3017cd850bff6dd6c52f9ccff8b4d21b7b08"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "cloudabi"
 version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -601,6 +601,12 @@ name = "core-foundation-sys"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b3a71ab494c0b5b860bdc8407ae08978052417070c2ced38573a9157ad75b8ac"
+
+[[package]]
+name = "cpuid-bool"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8aebca1129a03dc6dc2b127edd729435bbc4a37e1d5f4d7513165089ceb02634"
 
 [[package]]
 name = "crc32fast"
@@ -766,6 +772,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "curve25519-dalek"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8492de420e9e60bc9a1d66e2dbb91825390b738a388606600663fc529b4b307"
+dependencies = [
+ "byteorder",
+ "digest 0.9.0",
+ "rand_core 0.5.1",
+ "subtle 2.2.3",
+ "zeroize 1.1.0",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -793,6 +812,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f3d0c8c8752312f9713efd397ff63acb9f85585afbf179282e720e7704954dd5"
 dependencies = [
  "generic-array 0.12.3",
+]
+
+[[package]]
+name = "digest"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3dd60d1080a57a05ab032377049e0591415d2b31afd7028356dbf3cc6dcb066"
+dependencies = [
+ "generic-array 0.14.4",
 ]
 
 [[package]]
@@ -886,15 +914,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "ed25519-dalek"
-version = "1.0.0-pre.3"
+name = "ed25519"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "978710b352437433c97b2bff193f2fb1dfd58a093f863dd95e225a19baa599a2"
+checksum = "37c66a534cbb46ab4ea03477eae19d5c22c01da8258030280b7bd9d8433fb6ef"
 dependencies = [
- "clear_on_drop",
- "curve25519-dalek",
+ "signature",
+]
+
+[[package]]
+name = "ed25519-dalek"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c762bae6dcaf24c4c84667b8579785430908723d5c889f469d76a41d59cc7a9d"
+dependencies = [
+ "curve25519-dalek 3.0.0",
+ "ed25519",
  "rand 0.7.3",
- "sha2 0.8.2",
+ "serde",
+ "sha2 0.9.1",
+ "zeroize 1.1.0",
 ]
 
 [[package]]
@@ -1153,6 +1192,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "generic-array"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "501466ecc8a30d1d3b7fc9229b122b2ce8ed6e9d9223f1138d4babb253e51817"
+dependencies = [
+ "typenum",
+ "version_check 0.9.2",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1190,8 +1239,7 @@ checksum = "9b919933a397b79c37e33b77bb2aa3dc8eb6e165ad809e58ff75bc7db2e34574"
 
 [[package]]
 name = "grin_api"
-version = "4.0.0"
-source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0#ad62e757d3fe4ee535c99147f702f762930f8293"
+version = "4.2.0-alpha.1"
 dependencies = [
  "bytes",
  "easy-jsonrpc-mw",
@@ -1223,8 +1271,7 @@ dependencies = [
 
 [[package]]
 name = "grin_chain"
-version = "4.0.0"
-source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0#ad62e757d3fe4ee535c99147f702f762930f8293"
+version = "4.2.0-alpha.1"
 dependencies = [
  "bit-vec",
  "bitflags 1.2.1",
@@ -1247,11 +1294,11 @@ dependencies = [
 
 [[package]]
 name = "grin_core"
-version = "4.0.0"
-source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0#ad62e757d3fe4ee535c99147f702f762930f8293"
+version = "4.2.0-alpha.1"
 dependencies = [
  "blake2-rfc",
  "byteorder",
+ "bytes",
  "chrono",
  "croaring-mw",
  "digest 0.7.6",
@@ -1275,8 +1322,7 @@ dependencies = [
 
 [[package]]
 name = "grin_keychain"
-version = "4.0.0"
-source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0#ad62e757d3fe4ee535c99147f702f762930f8293"
+version = "4.2.0-alpha.1"
 dependencies = [
  "blake2-rfc",
  "byteorder",
@@ -1297,10 +1343,10 @@ dependencies = [
 
 [[package]]
 name = "grin_p2p"
-version = "4.0.0"
-source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0#ad62e757d3fe4ee535c99147f702f762930f8293"
+version = "4.2.0-alpha.1"
 dependencies = [
  "bitflags 1.2.1",
+ "bytes",
  "chrono",
  "enum_primitive",
  "grin_chain",
@@ -1318,8 +1364,7 @@ dependencies = [
 
 [[package]]
 name = "grin_pool"
-version = "4.0.0"
-source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0#ad62e757d3fe4ee535c99147f702f762930f8293"
+version = "4.2.0-alpha.1"
 dependencies = [
  "blake2-rfc",
  "chrono",
@@ -1352,8 +1397,7 @@ dependencies = [
 
 [[package]]
 name = "grin_store"
-version = "4.0.0"
-source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0#ad62e757d3fe4ee535c99147f702f762930f8293"
+version = "4.2.0-alpha.1"
 dependencies = [
  "byteorder",
  "croaring-mw",
@@ -1372,8 +1416,7 @@ dependencies = [
 
 [[package]]
 name = "grin_util"
-version = "4.0.0"
-source = "git+https://github.com/vcashorg/vcash?tag=v4.0.0#ad62e757d3fe4ee535c99147f702f762930f8293"
+version = "4.2.0-alpha.1"
 dependencies = [
  "backtrace",
  "base64 0.12.3",
@@ -1393,7 +1436,7 @@ dependencies = [
 
 [[package]]
 name = "grin_wallet_api"
-version = "4.0.1-alpha.1"
+version = "4.1.0-alpha.1"
 dependencies = [
  "base64 0.12.3",
  "chrono",
@@ -1417,7 +1460,7 @@ dependencies = [
 
 [[package]]
 name = "grin_wallet_config"
-version = "4.0.1-alpha.1"
+version = "4.1.0-alpha.1"
 dependencies = [
  "dirs 2.0.2",
  "grin_wallet_util",
@@ -1430,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "grin_wallet_controller"
-version = "4.0.1-alpha.1"
+version = "4.1.0-alpha.1"
 dependencies = [
  "chrono",
  "easy-jsonrpc-mw",
@@ -1460,7 +1503,7 @@ dependencies = [
 
 [[package]]
 name = "grin_wallet_impls"
-version = "4.0.1-alpha.1"
+version = "4.1.0-alpha.1"
 dependencies = [
  "blake2-rfc",
  "byteorder",
@@ -1495,7 +1538,7 @@ dependencies = [
 
 [[package]]
 name = "grin_wallet_libwallet"
-version = "4.0.1-alpha.1"
+version = "4.1.0-alpha.1"
 dependencies = [
  "age",
  "base64 0.9.3",
@@ -1504,7 +1547,7 @@ dependencies = [
  "bs58",
  "byteorder",
  "chrono",
- "curve25519-dalek",
+ "curve25519-dalek 2.1.0",
  "ed25519-dalek",
  "failure",
  "failure_derive",
@@ -1527,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "grin_wallet_util"
-version = "4.0.1-alpha.1"
+version = "4.1.0-alpha.1"
 dependencies = [
  "data-encoding",
  "ed25519-dalek",
@@ -2317,6 +2360,12 @@ name = "opaque-debug"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2839e79665f131bdb5782e51f2c6c9599c133c6098982a54c794358bf432529c"
+
+[[package]]
+name = "opaque-debug"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "624a8340c38c1b80fd549087862da4ba43e08858af025b236e509b6649fc13d5"
 
 [[package]]
 name = "openssl"
@@ -3191,7 +3240,20 @@ dependencies = [
  "block-buffer 0.7.3",
  "digest 0.8.1",
  "fake-simd",
- "opaque-debug",
+ "opaque-debug 0.2.3",
+]
+
+[[package]]
+name = "sha2"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2933378ddfeda7ea26f48c555bdad8bb446bf8a3d17832dc83e380d444cfb8c1"
+dependencies = [
+ "block-buffer 0.9.0",
+ "cfg-if",
+ "cpuid-bool",
+ "digest 0.9.0",
+ "opaque-debug 0.3.0",
 ]
 
 [[package]]
@@ -3204,7 +3266,7 @@ dependencies = [
  "byte-tools 0.3.1",
  "digest 0.8.1",
  "keccak",
- "opaque-debug",
+ "opaque-debug 0.2.3",
 ]
 
 [[package]]
@@ -3222,6 +3284,12 @@ dependencies = [
  "arc-swap",
  "libc",
 ]
+
+[[package]]
+name = "signature"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29f060a7d147e33490ec10da418795238fd7545bba241504d6b31a409f2e6210"
 
 [[package]]
 name = "siphasher"
@@ -3736,7 +3804,7 @@ dependencies = [
 
 [[package]]
 name = "vcash_wallet"
-version = "4.0.1"
+version = "4.1.0-alpha.1"
 dependencies = [
  "built",
  "clap",
@@ -3961,7 +4029,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "637ff90c9540fa3073bb577e65033069e4bae7c79d49d74aa3ffdf5342a53217"
 dependencies = [
- "curve25519-dalek",
+ "curve25519-dalek 2.1.0",
  "rand_core 0.5.1",
  "zeroize 1.1.0",
 ]

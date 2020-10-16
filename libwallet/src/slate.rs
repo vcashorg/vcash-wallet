@@ -18,7 +18,7 @@
 use crate::error::{Error, ErrorKind};
 use crate::grin_core::core::amount_to_hr_string;
 use crate::grin_core::core::transaction::{
-	Input, KernelFeatures, NRDRelativeHeight, Output, OutputFeatures, Transaction, TransactionBody,
+	Input, Inputs, KernelFeatures, NRDRelativeHeight, Output, OutputFeatures, Transaction,
 	TxKernel, Weighting,
 };
 use crate::grin_core::core::transaction::{
@@ -43,16 +43,14 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::slate_versions::v4::{
-	CoinbaseV4, CommitsV4, InputV4, KernelFeaturesArgsV4, OutputFeaturesV4, OutputV4,
-	ParticipantDataV4, PaymentInfoV4, SlateStateV4, SlateV4, TransactionBodyV4, TransactionV4,
-	TxKernelV4, VersionCompatInfoV4,
+	CommitsV4, KernelFeaturesArgsV4, OutputFeaturesV4, ParticipantDataV4, PaymentInfoV4,
+	SlateStateV4, SlateV4, VersionCompatInfoV4,
 };
 use crate::slate_versions::VersionedSlate;
 use crate::slate_versions::{CURRENT_SLATE_VERSION, GRIN_BLOCK_HEADER_VERSION};
-use crate::types::CbData;
 
 use crate::grin_core::core::committed::Committed;
-use crate::slate_versions::v4::{TokenCommitsV4, TokenInputV4, TokenOutputV4, TokenTxKernelV4};
+use crate::slate_versions::v4::TokenCommitsV4;
 
 #[derive(Debug, Clone)]
 pub struct PaymentInfo {
@@ -133,7 +131,7 @@ pub struct Slate {
 	/// 	1: issue token
 	/// 	2: height_locked
 	pub token_kernel_features: u8,
-	/// Offset, needed when posting of tranasction is deferred
+	/// Offset, needed when posting of transasction is deferred
 	pub offset: BlindingFactor,
 	/// Participant data, each participant in the transaction will
 	/// insert their public data here. For now, 0 is sender and 1
@@ -145,10 +143,6 @@ pub struct Slate {
 	pub kernel_features_args: Option<KernelFeaturesArgs>,
 	/// Token Kernel features arguments
 	pub token_kernel_features_args: Option<KernelFeaturesArgs>,
-	//TODO: Remove post HF3
-	/// participant ID, only stored for compatibility with V3 slates
-	/// not serialized anywhere
-	pub participant_id: Option<PublicKey>,
 }
 
 impl fmt::Display for Slate {
@@ -231,10 +225,6 @@ impl Slate {
 			None => Err(ErrorKind::SlateTransactionRequired.into()),
 		}
 	}
-	/// Whether the slate started life as a compact slate
-	pub fn is_compact(&self) -> bool {
-		self.version_info.version >= 4
-	}
 
 	/// number of participants
 	pub fn num_participants(&self) -> u8 {
@@ -242,14 +232,6 @@ impl Slate {
 			0 => 2,
 			n => n,
 		}
-	}
-
-	/// Compact the slate for initial sending, storing the excess + offset explicit
-	/// and removing my input/output data
-	/// This info must be stored in the context for repopulation later
-	pub fn compact(&mut self) -> Result<(), Error> {
-		self.tx = None;
-		Ok(())
 	}
 
 	/// Recieve a slate, upgrade it to the latest version internally
@@ -264,9 +246,23 @@ impl Slate {
 	pub fn upgrade(v_slate: VersionedSlate) -> Result<Slate, Error> {
 		let v4: SlateV4 = match v_slate {
 			VersionedSlate::V4(s) => s,
-			VersionedSlate::V3(s) => SlateV4::from(s),
 		};
 		Ok(v4.into())
+	}
+	/// Compact the slate for initial sending, storing the excess + offset explicit
+	/// and removing my input/output data
+	/// This info must be stored in the context for repopulation later
+	pub fn compact(&mut self) -> Result<(), Error> {
+		self.tx = None;
+		Ok(())
+	}
+
+	/// Build a new empty transaction.
+	/// Wallet currently only supports tx with "features and commit" inputs.
+	pub fn empty_transaction() -> Transaction {
+		let mut tx = Transaction::empty();
+		tx.body = tx.body.replace_inputs(Inputs::FeaturesAndCommit(vec![]));
+		tx
 	}
 
 	/// Create a new slate
@@ -283,7 +279,7 @@ impl Slate {
 			num_participants: np, // assume 2 if not present
 			id: Uuid::new_v4(),
 			state,
-			tx: Some(Transaction::empty()),
+			tx: Some(Slate::empty_transaction()),
 			amount: 0,
 			token_type: None,
 			fee: 0,
@@ -297,7 +293,6 @@ impl Slate {
 				block_header_version: GRIN_BLOCK_HEADER_VERSION,
 			},
 			payment_proof: None,
-			participant_id: None,
 			kernel_features_args: None,
 			token_kernel_features_args: None,
 		}
@@ -347,7 +342,7 @@ impl Slate {
 			return Ok((BlindingFactor::zero(), BlindingFactor::zero()));
 		}
 		let (tx, blind, token_bind) =
-			build::partial_transaction(self.tx_or_err()?.clone(), elems, keychain, builder)?;
+			build::partial_transaction(self.tx_or_err()?.clone(), &elems, keychain, builder)?;
 		self.tx = Some(tx);
 		Ok((blind, token_bind))
 	}
@@ -393,14 +388,14 @@ impl Slate {
 			let feature = TokenKernelFeatures::IssueToken;
 			let token_type = TokenKey::from_hex(self.token_type.clone().unwrap().as_str())?;
 			let mut token_kernel =
-				TokenTxKernel::with_features(feature).with_token_type(token_type.clone());
+				TokenTxKernel::with_features(feature).with_token_type(token_type);
 
 			let secp = keychain.secp();
 			let value_commit = secp.commit_value(amount).unwrap();
-			let out_commit = self.tx_or_err()?.token_outputs()[0].commit.clone();
+			let out_commit = self.tx_or_err()?.token_outputs()[0].commitment().clone();
 			let excess = secp.commit_sum(vec![out_commit], vec![value_commit])?;
 			let pubkey = excess.to_pubkey(&secp)?;
-			let msg = feature.token_kernel_sig_msg(token_type.clone())?;
+			let msg = feature.token_kernel_sig_msg(token_type)?;
 			let sig = aggsig::sign_from_key_id(
 				&secp,
 				keychain,
@@ -432,17 +427,10 @@ impl Slate {
 	where
 		K: Keychain,
 	{
-		// Whoever does this first generates the offset
-		// TODO: Remove HF3
-		if self.participant_data.is_empty() && !self.is_compact() {
-			self.generate_offset(keychain, sec_key, use_test_rng)?;
-		}
 		// Always choose my part of the offset, and subtract from my excess
-		if self.is_compact() {
-			//token recevier do not need to generate offset
-			if self.token_type.is_none() || self.participant_data.is_empty() {
-				self.generate_offset(keychain, sec_key, use_test_rng)?;
-			}
+		//token recevier do not need to generate offset
+		if self.token_type.is_none() || self.participant_data.is_empty() {
+			self.generate_offset(keychain, sec_key, use_test_rng)?;
 		}
 		let key = match self.token_type.clone() {
 			Some(_) => token_sec_key,
@@ -527,9 +515,8 @@ impl Slate {
 		K: Keychain,
 	{
 		// TODO: Note we're unable to verify fees in this instance
-		if !self.is_compact() {
-			self.check_fees()?;
-		}
+		// Left here is a reminder that we no longer check fees
+		// self.check_fees()?;
 
 		self.verify_part_sigs(keychain.secp())?;
 		let (key, msg) = match self.token_type.clone() {
@@ -655,7 +642,6 @@ impl Slate {
 			public_nonce: pub_nonce,
 			part_sig: part_sig,
 		});
-		self.participant_id = Some(pub_key);
 		Ok(())
 	}
 
@@ -686,18 +672,12 @@ impl Slate {
 			}
 		};
 
-		if self.is_compact() {
-			let total_offset = keychain.blind_sum(
-				&BlindSum::new()
-					.add_blinding_factor(self.offset.clone())
-					.add_blinding_factor(my_offset.clone()),
-			)?;
-			self.offset = total_offset;
-		} else {
-			//TODO: Remove HF3
-			self.tx_or_err_mut()?.offset = my_offset.clone();
-			self.offset = my_offset.clone();
-		};
+		let total_offset = keychain.blind_sum(
+			&BlindSum::new()
+				.add_blinding_factor(self.offset.clone())
+				.add_blinding_factor(my_offset.clone()),
+		)?;
+		self.offset = total_offset;
 
 		let adjusted_offset = keychain.blind_sum(
 			&BlindSum::new()
@@ -859,18 +839,22 @@ impl Slate {
 
 		debug!("Final Tx excess: {:?}", final_excess);
 
-		let final_tx = self.tx_or_err_mut()?;
+		let final_tx = self.tx_or_err()?;
 
 		// update the tx kernel to reflect the offset excess and sig
 		assert_eq!(final_tx.kernels().len(), 1);
-		final_tx.kernels_mut()[0].excess = final_excess.clone();
-		final_tx.kernels_mut()[0].excess_sig = final_sig.clone();
+
+		let mut kernel = final_tx.kernels()[0];
+		kernel.excess = final_excess;
+		kernel.excess_sig = final_sig.clone();
+
+		let final_tx = final_tx.clone().replace_kernel(kernel);
 
 		// confirm the kernel verifies successfully before proceeding
 		debug!("Validating final transaction");
 		trace!(
 			"Final tx: {}",
-			serde_json::to_string_pretty(final_tx).unwrap()
+			serde_json::to_string_pretty(&final_tx).unwrap()
 		);
 		final_tx.kernels()[0].verify()?;
 
@@ -881,6 +865,9 @@ impl Slate {
 			error!("Error with final tx validation: {}", e);
 			Err(e.into())
 		} else {
+			// replace our slate tx with the new one with updated kernel
+			self.tx = Some(final_tx);
+
 			Ok(())
 		}
 	}
@@ -907,7 +894,7 @@ impl Slate {
 
 		let final_excess = self.calc_final_excess(keychain.secp())?;
 
-		let final_tx = self.tx_or_err_mut()?;
+		let final_tx = self.tx_or_err()?;
 
 		let secp = keychain.secp();
 
@@ -917,8 +904,12 @@ impl Slate {
 
 		// update the tx kernel to reflect the offset excess and sig
 		assert_eq!(final_tx.kernels().len(), 1);
-		final_tx.kernels_mut()[0].excess = final_excess.clone();
-		final_tx.kernels_mut()[0].excess_sig = sig;
+
+		let mut kernel = final_tx.kernels()[0];
+		kernel.excess = final_excess;
+		kernel.excess_sig = sig.clone();
+
+		let final_tx = final_tx.clone().replace_kernel(kernel);
 
 		// confirm the kernel verifies successfully before proceeding
 		debug!("Validating final transaction");
@@ -947,16 +938,20 @@ impl Slate {
 
 		let final_excess = self.calc_excess(keychain.secp())?;
 
-		let final_tx = self.tx_or_err_mut()?;
+		let final_tx = self.tx_or_err()?;
 
 		// update the tx kernel to reflect the offset excess and sig
 		assert_eq!(final_tx.token_kernels().len(), 1);
-		final_tx.token_kernels_mut()[0].excess = final_excess.clone();
-		final_tx.token_kernels_mut()[0].excess_sig = final_sig.clone();
+
+		let mut token_kernel = final_tx.token_kernels()[0];
+		token_kernel.excess = final_excess;
+		token_kernel.excess_sig = final_sig.clone();
+
+		let final_tx = final_tx.clone().replace_token_kernel(token_kernel);
 
 		// confirm the kernel verifies successfully before proceeding
 		debug!("Validating final transaction");
-		final_tx.token_kernels_mut()[0].verify()?;
+		final_tx.token_kernels()[0].verify()?;
 
 		// confirm the overall transaction is valid (including the updated kernel)
 		// accounting for tx weight limits
@@ -965,6 +960,9 @@ impl Slate {
 			error!("Error with final tx validation: {}", e);
 			Err(e.into())
 		} else {
+			// replace our slate tx with the new one with updated kernel
+			self.tx = Some(final_tx);
+
 			Ok(())
 		}
 	}
@@ -979,18 +977,6 @@ impl Serialize for Slate {
 		v4.serialize(serializer)
 	}
 }
-
-// Coinbase data to versioned.
-impl From<CbData> for CoinbaseV4 {
-	fn from(cb: CbData) -> CoinbaseV4 {
-		CoinbaseV4 {
-			output: OutputV4::from(&cb.output),
-			kernel: TxKernelV4::from(&cb.kernel),
-			key_id: cb.key_id,
-		}
-	}
-}
-
 // Current slate version to versioned conversions
 
 // Slate to versioned
@@ -1011,7 +997,6 @@ impl From<Slate> for SlateV4 {
 			participant_data,
 			version_info,
 			payment_proof,
-			participant_id: _participant_id,
 			kernel_features_args,
 			token_kernel_features_args,
 		} = slate.clone();
@@ -1073,7 +1058,6 @@ impl From<&Slate> for SlateV4 {
 			participant_data,
 			version_info,
 			payment_proof,
-			participant_id: _participant_id,
 			kernel_features_args,
 			token_kernel_features_args,
 		} = slate;
@@ -1127,56 +1111,44 @@ impl From<&Slate> for SlateV4 {
 	}
 }
 
-// Node's Transaction object and lock height to SlateV4 `coms`
 impl From<&Slate> for Option<Vec<CommitsV4>> {
-	fn from(slate: &Slate) -> Option<Vec<CommitsV4>> {
-		let mut ret_vec = vec![];
-		let (ins, outs) = match slate.tx.as_ref() {
-			Some(t) => (t.body.inputs.clone(), t.body.outputs.clone()),
-			None => return None,
-		};
-		for i in ins.iter() {
-			ret_vec.push(CommitsV4 {
-				f: i.features.into(),
-				c: i.commit,
-				p: None,
-			});
+	fn from(slate: &Slate) -> Self {
+		match slate.tx {
+			None => None,
+			Some(ref tx) => {
+				let mut ret_vec = vec![];
+				match tx.inputs() {
+					Inputs::CommitOnly(_) => panic!("commit only inputs unsupported"),
+					Inputs::FeaturesAndCommit(ref inputs) => {
+						for input in inputs {
+							ret_vec.push(input.into());
+						}
+					}
+				}
+				for output in tx.outputs() {
+					ret_vec.push(output.into());
+				}
+				Some(ret_vec)
+			}
 		}
-		for o in outs.iter() {
-			ret_vec.push(CommitsV4 {
-				f: o.features.into(),
-				c: o.commit,
-				p: Some(o.proof),
-			});
-		}
-		Some(ret_vec)
 	}
 }
 
 impl From<&Slate> for Option<Vec<TokenCommitsV4>> {
 	fn from(slate: &Slate) -> Option<Vec<TokenCommitsV4>> {
-		let mut ret_vec = vec![];
-		let (ins, outs) = match slate.tx.as_ref() {
-			Some(t) => (t.body.token_inputs.clone(), t.body.token_outputs.clone()),
-			None => return None,
-		};
-		for i in ins.iter() {
-			ret_vec.push(TokenCommitsV4 {
-				k: i.token_type,
-				f: i.features.into(),
-				c: i.commit,
-				p: None,
-			});
+		match slate.tx {
+			None => None,
+			Some(ref tx) => {
+				let mut ret_vec = vec![];
+				for token_input in tx.token_inputs() {
+					ret_vec.push(token_input.into());
+				}
+				for token_output in tx.token_outputs() {
+					ret_vec.push(token_output.into());
+				}
+				Some(ret_vec)
+			}
 		}
-		for o in outs.iter() {
-			ret_vec.push(TokenCommitsV4 {
-				k: o.token_type,
-				f: o.features.into(),
-				c: o.commit,
-				p: Some(o.proof),
-			});
-		}
-		Some(ret_vec)
 	}
 }
 
@@ -1265,155 +1237,6 @@ impl From<OutputFeatures> for OutputFeaturesV4 {
 	}
 }
 
-impl From<Transaction> for TransactionV4 {
-	fn from(tx: Transaction) -> TransactionV4 {
-		let Transaction { offset, body } = tx;
-		let body = TransactionBodyV4::from(&body);
-		TransactionV4 { offset, body }
-	}
-}
-
-impl From<&Transaction> for TransactionV4 {
-	fn from(tx: &Transaction) -> TransactionV4 {
-		let Transaction { offset, body } = tx;
-		let offset = offset.clone();
-		let body = TransactionBodyV4::from(body);
-		TransactionV4 { offset, body }
-	}
-}
-
-impl From<&TransactionBody> for TransactionBodyV4 {
-	fn from(body: &TransactionBody) -> TransactionBodyV4 {
-		let TransactionBody {
-			inputs,
-			token_inputs,
-			outputs,
-			token_outputs,
-			kernels,
-			token_kernels,
-		} = body;
-
-		let inputs = map_vec!(inputs, |inp| InputV4::from(inp));
-		let token_ins = map_vec!(token_inputs, |inp| TokenInputV4::from(inp));
-		let outputs = map_vec!(outputs, |out| OutputV4::from(out));
-		let token_outs = map_vec!(token_outputs, |out| TokenOutputV4::from(out));
-		let kernels = map_vec!(kernels, |kern| TxKernelV4::from(kern));
-		let token_kers = map_vec!(token_kernels, |kern| TokenTxKernelV4::from(kern));
-
-		TransactionBodyV4 {
-			ins: inputs,
-			token_ins,
-			outs: outputs,
-			token_outs,
-			kers: kernels,
-			token_kers,
-		}
-	}
-}
-
-impl From<&Input> for InputV4 {
-	fn from(input: &Input) -> InputV4 {
-		let Input { features, commit } = *input;
-		InputV4 {
-			features: features.into(),
-			commit,
-		}
-	}
-}
-
-impl From<&TokenInput> for TokenInputV4 {
-	fn from(input: &TokenInput) -> TokenInputV4 {
-		let TokenInput {
-			features,
-			token_type,
-			commit,
-		} = *input;
-		TokenInputV4 {
-			features: features.into(),
-			token_type,
-			commit,
-		}
-	}
-}
-
-impl From<&Output> for OutputV4 {
-	fn from(output: &Output) -> OutputV4 {
-		let Output {
-			features,
-			commit,
-			proof,
-		} = *output;
-		OutputV4 {
-			features: features.into(),
-			com: commit,
-			prf: proof,
-		}
-	}
-}
-
-impl From<&TokenOutput> for TokenOutputV4 {
-	fn from(output: &TokenOutput) -> TokenOutputV4 {
-		let TokenOutput {
-			features,
-			token_type,
-			commit,
-			proof,
-		} = *output;
-		TokenOutputV4 {
-			features: features.into(),
-			token_type,
-			commit,
-			proof,
-		}
-	}
-}
-
-impl From<&TxKernel> for TxKernelV4 {
-	fn from(kernel: &TxKernel) -> TxKernelV4 {
-		let (features, fee, lock_height) = match kernel.features {
-			KernelFeatures::Plain { fee } => (CompatKernelFeatures::Plain, fee, 0),
-			KernelFeatures::Coinbase => (CompatKernelFeatures::Coinbase, 0, 0),
-			KernelFeatures::HeightLocked { fee, lock_height } => {
-				(CompatKernelFeatures::HeightLocked, fee, lock_height)
-			}
-			KernelFeatures::NoRecentDuplicate {
-				fee,
-				relative_height,
-			} => (
-				CompatKernelFeatures::NoRecentDuplicate,
-				fee,
-				relative_height.into(),
-			),
-		};
-		TxKernelV4 {
-			features,
-			fee,
-			lock_height,
-			excess: kernel.excess,
-			excess_sig: kernel.excess_sig,
-		}
-	}
-}
-
-impl From<&TokenTxKernel> for TokenTxKernelV4 {
-	fn from(kernel: &TokenTxKernel) -> TokenTxKernelV4 {
-		let (features, lock_height) = match kernel.features {
-			TokenKernelFeatures::PlainToken => (CompatTokenKernelFeatures::PlainToken, 0),
-			TokenKernelFeatures::IssueToken => (CompatTokenKernelFeatures::IssueToken, 0),
-			TokenKernelFeatures::HeightLockedToken { lock_height } => {
-				(CompatTokenKernelFeatures::HeightLockedToken, lock_height)
-			}
-		};
-		TokenTxKernelV4 {
-			features,
-			token_type: kernel.token_type,
-			lock_height,
-			excess: kernel.excess,
-			excess_sig: kernel.excess_sig,
-		}
-	}
-}
-
 // Versioned to current slate
 impl From<SlateV4> for Slate {
 	fn from(slate: SlateV4) -> Slate {
@@ -1470,7 +1293,6 @@ impl From<SlateV4> for Slate {
 			participant_data,
 			version_info,
 			payment_proof,
-			participant_id: None,
 			kernel_features_args,
 			token_kernel_features_args,
 		}
@@ -1524,19 +1346,24 @@ pub fn tx_from_slate_v4(slate: &SlateV4) -> Option<Transaction> {
 		excess,
 		excess_sig,
 	};
-	let mut tx = Transaction::empty();
-	tx.body.kernels.push(kernel);
+	let mut tx = Slate::empty_transaction().with_kernel(kernel);
+
+	let mut outputs = vec![];
+	let mut inputs = vec![];
+	let mut token_outputs = vec![];
+	let mut token_inputs = vec![];
+
 	for c in coms.iter() {
 		match &c.p {
-			Some(p) => tx.body.outputs.push(Output {
-				features: c.f.into(),
-				commit: c.c,
-				proof: p.clone(),
-			}),
-			None => tx.body.inputs.push(Input {
-				features: c.f.into(),
-				commit: c.c,
-			}),
+			Some(p) => {
+				outputs.push(Output::new(c.f.into(), c.c, p.clone()));
+			}
+			None => {
+				inputs.push(Input {
+					features: c.f.into(),
+					commit: c.c,
+				});
+			}
 		}
 	}
 	if slate.token_type.is_some() {
@@ -1559,20 +1386,22 @@ pub fn tx_from_slate_v4(slate: &SlateV4) -> Option<Transaction> {
 		tx.body.token_kernels.push(token_kernel);
 		for c in token_coms.iter() {
 			match &c.p {
-				Some(p) => tx.body.token_outputs.push(TokenOutput {
-					token_type: token_type.clone(),
-					features: c.f.into(),
-					commit: c.c,
-					proof: p.clone(),
-				}),
-				None => tx.body.token_inputs.push(TokenInput {
-					token_type: token_type.clone(),
-					features: c.f.into(),
-					commit: c.c,
-				}),
+				Some(p) => {
+					token_outputs.push(TokenOutput::new(c.f.into(), token_type, c.c, p.clone()));
+				}
+				None => {
+					token_inputs.push(TokenInput::new(c.f.into(), token_type, c.c));
+				}
 			}
 		}
 	}
+
+	tx.body = tx
+		.body
+		.replace_inputs(inputs.as_slice().into())
+		.replace_outputs(outputs.as_slice())
+		.replace_token_inputs(token_inputs.as_slice())
+		.replace_token_outputs(token_outputs.as_slice());
 	tx.offset = slate.off.clone();
 	Some(tx)
 }
@@ -1667,162 +1496,4 @@ impl From<OutputFeaturesV4> for OutputFeatures {
 			_ => OutputFeatures::Plain,
 		}
 	}
-}
-
-impl From<TransactionV4> for Transaction {
-	fn from(tx: TransactionV4) -> Transaction {
-		let TransactionV4 { offset, body } = tx;
-		let body = TransactionBody::from(&body);
-		Transaction { offset, body }
-	}
-}
-
-impl From<&TransactionV4> for Transaction {
-	fn from(tx: &TransactionV4) -> Transaction {
-		let TransactionV4 { offset, body } = tx;
-		let offset = offset.clone();
-		let body = TransactionBody::from(body);
-		Transaction { offset, body }
-	}
-}
-
-impl From<&TransactionBodyV4> for TransactionBody {
-	fn from(body: &TransactionBodyV4) -> TransactionBody {
-		let TransactionBodyV4 {
-			ins,
-			token_ins,
-			outs,
-			token_outs,
-			kers,
-			token_kers,
-		} = body;
-
-		let inputs = map_vec!(ins, |inp| Input::from(inp));
-		let token_inputs = map_vec!(token_ins, |inp| TokenInput::from(inp));
-		let outputs = map_vec!(outs, |out| Output::from(out));
-		let token_outputs = map_vec!(token_outs, |out| TokenOutput::from(out));
-		let kernels = map_vec!(kers, |kern| TxKernel::from(kern));
-		let token_kernels = map_vec!(token_kers, |kern| TokenTxKernel::from(kern));
-
-		TransactionBody {
-			inputs,
-			token_inputs,
-			outputs,
-			token_outputs,
-			kernels,
-			token_kernels,
-		}
-	}
-}
-
-impl From<&InputV4> for Input {
-	fn from(input: &InputV4) -> Input {
-		let InputV4 { features, commit } = *input;
-		Input {
-			features: features.into(),
-			commit,
-		}
-	}
-}
-
-impl From<&TokenInputV4> for TokenInput {
-	fn from(input: &TokenInputV4) -> TokenInput {
-		let TokenInputV4 {
-			features,
-			token_type,
-			commit,
-		} = *input;
-		TokenInput {
-			features: features.into(),
-			token_type,
-			commit,
-		}
-	}
-}
-
-impl From<&OutputV4> for Output {
-	fn from(output: &OutputV4) -> Output {
-		let OutputV4 {
-			features,
-			com: commit,
-			prf: proof,
-		} = *output;
-		Output {
-			features: features.into(),
-			commit,
-			proof,
-		}
-	}
-}
-
-impl From<&TokenOutputV4> for TokenOutput {
-	fn from(output: &TokenOutputV4) -> TokenOutput {
-		let TokenOutputV4 {
-			features,
-			token_type,
-			commit,
-			proof,
-		} = *output;
-		TokenOutput {
-			features: features.into(),
-			token_type,
-			commit,
-			proof,
-		}
-	}
-}
-
-impl From<&TxKernelV4> for TxKernel {
-	fn from(kernel: &TxKernelV4) -> TxKernel {
-		let (fee, lock_height) = (kernel.fee, kernel.lock_height);
-		let features = match kernel.features {
-			CompatKernelFeatures::Plain => KernelFeatures::Plain { fee },
-			CompatKernelFeatures::Coinbase => KernelFeatures::Coinbase,
-			CompatKernelFeatures::HeightLocked => KernelFeatures::HeightLocked { fee, lock_height },
-			CompatKernelFeatures::NoRecentDuplicate => KernelFeatures::NoRecentDuplicate {
-				fee,
-				relative_height: NRDRelativeHeight::new(lock_height)
-					.expect("a valid NRD relative height"),
-			},
-		};
-		TxKernel {
-			features,
-			excess: kernel.excess,
-			excess_sig: kernel.excess_sig,
-		}
-	}
-}
-
-impl From<&TokenTxKernelV4> for TokenTxKernel {
-	fn from(kernel: &TokenTxKernelV4) -> TokenTxKernel {
-		let lock_height = kernel.lock_height;
-		let features = match kernel.features {
-			CompatTokenKernelFeatures::PlainToken => TokenKernelFeatures::PlainToken,
-			CompatTokenKernelFeatures::IssueToken => TokenKernelFeatures::IssueToken,
-			CompatTokenKernelFeatures::HeightLockedToken => {
-				TokenKernelFeatures::HeightLockedToken { lock_height }
-			}
-		};
-		TokenTxKernel {
-			features,
-			token_type: kernel.token_type,
-			excess: kernel.excess,
-			excess_sig: kernel.excess_sig,
-		}
-	}
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub enum CompatKernelFeatures {
-	Plain,
-	Coinbase,
-	HeightLocked,
-	NoRecentDuplicate,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub enum CompatTokenKernelFeatures {
-	PlainToken,
-	IssueToken,
-	HeightLockedToken,
 }

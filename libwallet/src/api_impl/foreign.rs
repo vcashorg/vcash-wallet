@@ -17,7 +17,6 @@ use strum::IntoEnumIterator;
 
 use crate::api_impl::owner::finalize_tx as owner_finalize;
 use crate::api_impl::owner::{check_ttl, post_tx};
-use crate::grin_core::core::transaction::Transaction;
 use crate::grin_keychain::Keychain;
 use crate::grin_util::secp::key::SecretKey;
 use crate::internal::{selection, tx, updater};
@@ -107,10 +106,7 @@ where
 		}
 	}
 
-	// if this is compact mode, we need to create the transaction now
-	if ret_slate.is_compact() {
-		ret_slate.tx = Some(Transaction::empty());
-	}
+	ret_slate.tx = Some(Slate::empty_transaction());
 
 	let height = w.last_confirmed_height()?;
 	let keychain = w.keychain(keychain_mask)?;
@@ -138,20 +134,17 @@ where
 
 		p.receiver_signature = Some(sig);
 	}
-	// Can remove amount and fee now
-	// as well as sender's sig data
-	if ret_slate.is_compact() {
-		ret_slate.amount = 0;
-		ret_slate.fee = 0;
-		ret_slate.remove_other_sigdata(
-			&keychain,
-			&context.sec_nonce,
-			&context.sec_key,
-			&context.token_sec_key,
-		)?;
-	}
 
+	ret_slate.amount = 0;
+	ret_slate.fee = 0;
+	ret_slate.remove_other_sigdata(
+		&keychain,
+		&context.sec_nonce,
+		&context.sec_key,
+		&context.token_sec_key,
+	)?;
 	ret_slate.state = SlateState::Standard2;
+
 	Ok(ret_slate)
 }
 
@@ -169,15 +162,14 @@ where
 {
 	let mut sl = slate.clone();
 	let context = w.get_private_context(keychain_mask, sl.id.as_bytes())?;
-	let is_invoice = context.is_invoice;
-	if is_invoice {
+	if sl.state == SlateState::Invoice2 {
 		check_ttl(w, &sl)?;
-		if sl.is_compact() {
-			let mut temp_ctx = context.clone();
-			temp_ctx.sec_key = context.initial_sec_key.clone();
-			temp_ctx.sec_nonce = context.initial_sec_nonce.clone();
-			selection::repopulate_tx(&mut *w, keychain_mask, &mut sl, &temp_ctx, false)?;
-		}
+
+		let mut temp_ctx = context.clone();
+		temp_ctx.sec_key = context.initial_sec_key.clone();
+		temp_ctx.sec_nonce = context.initial_sec_nonce.clone();
+		selection::repopulate_tx(&mut *w, keychain_mask, &mut sl, &temp_ctx, false)?;
+
 		tx::complete_tx(&mut *w, keychain_mask, &mut sl, &context)?;
 		tx::update_stored_tx(&mut *w, keychain_mask, &context, &mut sl, true)?;
 		{
@@ -186,9 +178,7 @@ where
 			batch.commit()?;
 		}
 		sl.state = SlateState::Invoice3;
-		if sl.is_compact() {
-			sl.amount = 0;
-		}
+		sl.amount = 0;
 	} else {
 		sl = owner_finalize(w, keychain_mask, slate)?;
 	}

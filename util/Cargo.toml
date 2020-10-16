@@ -1,6 +1,6 @@
 [package]
 name = "grin_wallet_util"
-version = "4.0.1-alpha.1"
+version = "4.1.0-alpha.1"
 authors = ["Grin Developers <mimblewimble@lists.launchpad.net>"]
 description = "Util, for generic utilities and to re-export grin crates"
 license = "Apache-2.0"
@@ -13,7 +13,7 @@ edition = "2018"
 rand = "0.6"
 serde = "1"
 serde_derive = "1"
-ed25519-dalek = "1.0.0-pre.3"
+ed25519-dalek = "1.0.0-pre.4"
 data-encoding = "2"
 sha3 = "0.8"
 
@@ -27,12 +27,12 @@ sha3 = "0.8"
 
 # For beta release
 
- grin_core = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0"}
- grin_keychain = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0" }
- grin_chain = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0" }
- grin_util = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0" }
- grin_api = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0" }
- grin_store = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0" }
+# grin_core = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0"}
+# grin_keychain = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0" }
+# grin_chain = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0" }
+# grin_util = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0" }
+# grin_api = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0" }
+# grin_store = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0" }
 
 # For bleeding edge
 #grin_core = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
@@ -43,12 +43,12 @@ sha3 = "0.8"
 #grin_store = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
 
 # For local testing
-#grin_core = { path = "../../vcash/core"}
-#grin_keychain = { path = "../../vcash/keychain"}
-#grin_chain = { path = "../../vcash/chain"}
-#grin_util = { path = "../../vcash/util"}
-#grin_api = { path = "../../vcash/api"}
-#grin_store = { path = "../../vcash/store"}
+grin_core = { path = "../../vcash/core"}
+grin_keychain = { path = "../../vcash/keychain"}
+grin_chain = { path = "../../vcash/chain"}
+grin_util = { path = "../../vcash/util"}
+grin_api = { path = "../../vcash/api"}
+grin_store = { path = "../../vcash/store"}
 
 [dev-dependencies]
 pretty_assertions = "0.6"

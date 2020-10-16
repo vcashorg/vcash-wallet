@@ -13,13 +13,14 @@
 // limitations under the License.
 
 use std::convert::TryFrom;
-use std::iter::FromIterator;
+use std::str;
 
-use crate::{Error, ErrorKind};
+use super::armor::HEADER;
 use crate::{
-	Slate, SlateVersion, Slatepack, SlatepackAddress, SlatepackArmor, SlatepackBin,
+	slatepack, Slate, SlateVersion, Slatepack, SlatepackAddress, SlatepackArmor, SlatepackBin,
 	VersionedBinSlate, VersionedSlate,
 };
+use crate::{Error, ErrorKind};
 
 use grin_wallet_util::byte_ser;
 
@@ -47,30 +48,25 @@ impl<'a> Slatepacker<'a> {
 	}
 
 	/// return slatepack
-	pub fn deser_slatepack(&self, data: Vec<u8>, decrypt: bool) -> Result<Slatepack, Error> {
+	pub fn deser_slatepack(&self, data: &[u8], decrypt: bool) -> Result<Slatepack, Error> {
 		// check if data is armored, if so, remove and continue
-		if data.len() < super::armor::HEADER.len() {
-			let msg = format!("Data too short");
+		let data_len = data.len() as u64;
+		if data_len < slatepack::min_size() || data_len > slatepack::max_size() {
+			let msg = format!("Data invalid length");
 			return Err(ErrorKind::SlatepackDeser(msg).into());
 		}
-		let test_header = Vec::from_iter(data[0..super::armor::HEADER.len()].iter().cloned());
-		let data = match String::from_utf8(test_header) {
+
+		let test_header = &data[..HEADER.len()];
+
+		let data = match str::from_utf8(test_header) {
 			Ok(s) => {
-				if s.as_str() == super::armor::HEADER {
-					SlatepackArmor::decode(
-						String::from_utf8(data)
-							.map_err(|e| {
-								let msg = format!("{}", e);
-								error!("Error decoding slatepack armor: {}", msg);
-								ErrorKind::SlatepackDeser(msg)
-							})?
-							.as_str(),
-					)?
+				if s == HEADER {
+					SlatepackArmor::decode(data)?
 				} else {
-					data
+					data.to_vec()
 				}
 			}
-			Err(_) => data,
+			Err(_) => data.to_vec(),
 		};
 
 		// try as bin first, then as json

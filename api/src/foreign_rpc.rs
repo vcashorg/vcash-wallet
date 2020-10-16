@@ -53,8 +53,7 @@ pub trait ForeignRpc {
 			"Ok": {
 				"foreign_api_version": 2,
 				"supported_slate_versions": [
-					"V4",
-					"V3"
+					"V4"
 				]
 			}
 		}
@@ -96,7 +95,7 @@ pub trait ForeignRpc {
 				"kernel": {
 					"excess": "08dfe86d732f2dd24bac36aa7502685221369514197c26d33fac03041d47e4b490",
 					"excess_sig": "8f07ddd5e9f5179cff19486034181ed76505baaad53e5d994064127b56c5841be02fa098c54c9bf638e0ee1ad5eb896caa11565f632be7b9cd65643ba371044f",
-					"features": "Coinbase",
+					"features": "Coinbase"
 				},
 				"key_id": "0300000000000000000000000400000000",
 				"output": {
@@ -289,9 +288,6 @@ pub trait ForeignRpc {
 	```
 	*/
 	fn finalize_tx(&self, slate: VersionedSlate) -> Result<VersionedSlate, ErrorKind>;
-
-	/// For backwards-compatibility. Remove HF3
-	fn finalize_invoice_tx(&self, slate: VersionedSlate) -> Result<VersionedSlate, ErrorKind>;
 }
 
 impl<'a, L, C, K> ForeignRpc for Foreign<'a, L, C, K>
@@ -306,7 +302,7 @@ where
 
 	fn build_coinbase(&self, block_fees: &BlockFees) -> Result<VersionedCoinbase, ErrorKind> {
 		let cb: CbData = Foreign::build_coinbase(self, block_fees).map_err(|e| e.kind())?;
-		Ok(VersionedCoinbase::into_version(cb, SlateVersion::V3))
+		Ok(VersionedCoinbase::into_version(cb, SlateVersion::V4))
 	}
 
 	fn receive_tx(
@@ -331,14 +327,6 @@ where
 		let version = in_slate.version();
 		let out_slate =
 			Foreign::finalize_tx(self, &Slate::from(in_slate), true).map_err(|e| e.kind())?;
-		Ok(VersionedSlate::into_version(out_slate, version).map_err(|e| e.kind())?)
-	}
-
-	//TODO: Delete HF3
-	fn finalize_invoice_tx(&self, in_slate: VersionedSlate) -> Result<VersionedSlate, ErrorKind> {
-		let version = in_slate.version();
-		let out_slate =
-			Foreign::finalize_tx(self, &Slate::from(in_slate), false).map_err(|e| e.kind())?;
 		Ok(VersionedSlate::into_version(out_slate, version).map_err(|e| e.kind())?)
 	}
 }

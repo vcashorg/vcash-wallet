@@ -87,7 +87,7 @@ fn scan_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 	});
 
 	// few values to keep things shorter
-	let reward = core::consensus::REWARD;
+	let reward = core::consensus::REWARD_ADJUSTED;
 	let cm = global::coinbase_maturity() as u64; // assume all testing precedes soft fork height
 
 	// add some accounts
@@ -116,9 +116,9 @@ fn scan_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 		let (wallet1_refreshed, wallet1_info) = api.retrieve_summary_info(m, true, 1)?;
 		assert!(wallet1_refreshed);
 		assert_eq!(wallet1_info.last_confirmed_height, bh);
-		assert_eq!(wallet1_info.total, bh * reward);
-		assert_eq!(wallet1_info.amount_currently_spendable, (bh - cm) * reward);
-		// check tx log as well
+		assert_eq!(wallet1_info.total, 52 * reward); //8*50 + 12*10
+		assert_eq!(wallet1_info.amount_currently_spendable, (52 - cm) * reward); //8*50 + 9*10
+																		 // check tx log as well
 		let (_, txs) = api.retrieve_txs(m, true, None, None)?;
 		let (c, _) = libwallet::TxLogEntry::sum_confirmed(&txs);
 		assert_eq!(wallet1_info.total, c);
@@ -166,7 +166,7 @@ fn scan_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 	wallet::controller::owner_single_use(Some(wallet1.clone()), mask1, None, |api, m| {
 		let (wallet1_refreshed, wallet1_info) = api.retrieve_summary_info(m, true, 1)?;
 		assert!(wallet1_refreshed);
-		assert_eq!(wallet1_info.total, bh * reward);
+		assert_eq!(wallet1_info.total, 52 * reward);
 		// And check account names haven't been splatted
 		let accounts = api.accounts(m)?;
 		assert_eq!(accounts.len(), 4);
@@ -212,7 +212,7 @@ fn scan_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 	// check spendable amount again
 	wallet::controller::owner_single_use(Some(wallet1.clone()), mask1, None, |api, m| {
 		let (_, wallet1_info) = api.retrieve_summary_info(m, true, 1)?;
-		assert_eq!(wallet1_info.amount_currently_spendable, (bh - cm) * reward);
+		assert_eq!(wallet1_info.amount_currently_spendable, 49 * reward);
 		Ok(())
 	})?;
 
@@ -372,7 +372,7 @@ fn two_wallets_one_seed_impl(test_dir: &'static str) -> Result<(), libwallet::Er
 	});
 
 	// few values to keep things shorter
-	let _reward = core::consensus::REWARD;
+	let _reward = core::consensus::REWARD_ADJUSTED;
 	let cm = global::coinbase_maturity() as usize; // assume all testing precedes soft fork height
 
 	// Do some mining
@@ -549,6 +549,9 @@ fn two_wallets_one_seed_impl(test_dir: &'static str) -> Result<(), libwallet::Er
 		"wallet6",
 		base_amount * 10
 	)?;
+
+	let _ = test_framework::award_blocks_to_wallet(&chain, miner.clone(), miner_mask, 2, false);
+	bh += 2 as u64;
 	send_to_dest!(
 		miner.clone(),
 		miner_mask,
@@ -556,6 +559,9 @@ fn two_wallets_one_seed_impl(test_dir: &'static str) -> Result<(), libwallet::Er
 		"wallet6",
 		base_amount * 11
 	)?;
+
+	let _ = test_framework::award_blocks_to_wallet(&chain, miner.clone(), miner_mask, 2, false);
+	bh += 2 as u64;
 	send_to_dest!(
 		miner.clone(),
 		miner_mask,
@@ -605,6 +611,9 @@ fn two_wallets_one_seed_impl(test_dir: &'static str) -> Result<(), libwallet::Er
 		"wallet7",
 		base_amount * 13
 	)?;
+
+	let _ = test_framework::award_blocks_to_wallet(&chain, miner.clone(), miner_mask, 2, false);
+	bh += 2 as u64;
 	send_to_dest!(
 		miner.clone(),
 		miner_mask,
@@ -612,6 +621,9 @@ fn two_wallets_one_seed_impl(test_dir: &'static str) -> Result<(), libwallet::Er
 		"wallet7",
 		base_amount * 14
 	)?;
+
+	let _ = test_framework::award_blocks_to_wallet(&chain, miner.clone(), miner_mask, 2, false);
+	bh += 2 as u64;
 	send_to_dest!(
 		miner.clone(),
 		miner_mask,

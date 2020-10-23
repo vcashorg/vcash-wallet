@@ -74,7 +74,7 @@ fn accounts_test_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 	});
 
 	// few values to keep things shorter
-	let reward = core::consensus::REWARD;
+	let reward = core::consensus::REWARD_ADJUSTED;
 	let cm = global::coinbase_maturity(); // assume all testing precedes soft fork height
 
 	// test default accounts exist
@@ -132,9 +132,9 @@ fn accounts_test_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 		let (wallet1_refreshed, wallet1_info) = api.retrieve_summary_info(m, true, 1)?;
 		assert!(wallet1_refreshed);
 		assert_eq!(wallet1_info.last_confirmed_height, 12);
-		assert_eq!(wallet1_info.total, 5 * reward);
-		assert_eq!(wallet1_info.amount_currently_spendable, (5 - cm) * reward);
-		// check tx log as well
+		assert_eq!(wallet1_info.total, 9 * reward); //50 + 4*10
+		assert_eq!(wallet1_info.amount_currently_spendable, (9 - cm) * reward); // 50 + 10*1
+																		// check tx log as well
 		let (_, txs) = api.retrieve_txs(m, true, None, None)?;
 		assert_eq!(txs.len(), 5);
 		Ok(())
@@ -156,9 +156,9 @@ fn accounts_test_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 		let (wallet1_refreshed, wallet1_info) = api.retrieve_summary_info(m, true, 1)?;
 		assert!(wallet1_refreshed);
 		assert_eq!(wallet1_info.last_confirmed_height, 12);
-		assert_eq!(wallet1_info.total, 7 * reward);
-		assert_eq!(wallet1_info.amount_currently_spendable, 7 * reward);
-		// check tx log as well
+		assert_eq!(wallet1_info.total, 35 * reward); // 50 * 7
+		assert_eq!(wallet1_info.amount_currently_spendable, 35 * reward); // 50 * 7
+																  // check tx log as well
 		let (_, txs) = api.retrieve_txs(m, true, None, None)?;
 		assert_eq!(txs.len(), 7);
 		Ok(())

@@ -219,8 +219,8 @@ pub fn add_block_with_reward(
 	reward_kernel: TxKernel,
 ) {
 	let prev = chain.head_header().unwrap();
-	let mut block = create_block_with_reward(chain, prev, txs, reward_output, reward_kernel);
-	process_block(chain, &mut block);
+	let block = create_block_with_reward(chain, prev, txs, reward_output, reward_kernel);
+	process_block(chain, block);
 }
 
 /// adds a reward output to a wallet, includes that reward in a block
@@ -269,16 +269,15 @@ where
 	K: keychain::Keychain + 'a,
 {
 	let prev = chain.head_header().unwrap();
-	let mut block = create_block_for_wallet(chain, prev, txs, wallet, keychain_mask)?;
-	process_block(chain, &mut block);
+	let block = create_block_for_wallet(chain, prev, txs, wallet, keychain_mask)?;
+	process_block(chain, block);
 	Ok(())
 }
 
-pub fn process_block(chain: &Chain, block: &mut core::core::Block) {
-	get_block_bit_diff(block);
-	chain
-		.process_block(block.clone(), chain::Options::MINE)
-		.unwrap();
+pub fn process_block(chain: &Chain, block: core::core::Block) {
+	let mut block = block.clone();
+	get_block_bit_diff(&mut block);
+	chain.process_block(block, chain::Options::MINE).unwrap();
 	chain.validate(false).unwrap();
 }
 

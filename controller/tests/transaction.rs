@@ -73,7 +73,7 @@ fn basic_transaction_api(test_dir: &'static str) -> Result<(), libwallet::Error>
 	});
 
 	// few values to keep things shorter
-	let reward = core::consensus::REWARD;
+	let reward = core::consensus::REWARD_ADJUSTED;
 	let cm = global::coinbase_maturity();
 	// mine a few blocks
 	let _ = test_framework::award_blocks_to_wallet(&chain, wallet1.clone(), mask1, 10, false);
@@ -86,17 +86,14 @@ fn basic_transaction_api(test_dir: &'static str) -> Result<(), libwallet::Error>
 			wallet1_info.last_confirmed_height, wallet1_info
 		);
 		assert!(wallet1_refreshed);
-		assert_eq!(
-			wallet1_info.amount_currently_spendable,
-			(wallet1_info.last_confirmed_height - cm) * reward
-		);
-		assert_eq!(wallet1_info.amount_immature, cm * reward);
+		assert_eq!(wallet1_info.amount_currently_spendable, 35 * reward);
+		assert_eq!(wallet1_info.amount_immature, 7 * reward);
 		Ok(())
 	})?;
 
 	// assert wallet contents
 	// and a single use api for a send command
-	let amount = 60_000_000_000;
+	let amount = 10_000_000_000;
 	let mut slate = Slate::blank(1, false);
 	wallet::controller::owner_single_use(Some(wallet1.clone()), mask1, None, |sender_api, m| {
 		// note this will increment the block count as part of the transaction "Posting"
@@ -147,6 +144,9 @@ fn basic_transaction_api(test_dir: &'static str) -> Result<(), libwallet::Error>
 			wallet1_info.last_confirmed_height as usize - cm as usize,
 			2,
 			1,
+			0,
+			0,
+			0,
 			None,
 		);
 		// we should have a transaction entry for this slate
@@ -194,17 +194,17 @@ fn basic_transaction_api(test_dir: &'static str) -> Result<(), libwallet::Error>
 			wallet1_info.last_confirmed_height as usize - 1 - cm as usize,
 			2,
 			1,
+			0,
+			0,
+			0,
 			None,
 		);
 		assert!(wallet1_refreshed);
 		// wallet 1 received fees, so amount should be the same
-		assert_eq!(
-			wallet1_info.total,
-			amount * wallet1_info.last_confirmed_height - amount
-		);
+		assert_eq!(wallet1_info.total, amount * 43 - amount);
 		assert_eq!(
 			wallet1_info.amount_currently_spendable,
-			(wallet1_info.last_confirmed_height - cm) * reward - amount - fee
+			(43 - cm) * reward - amount - fee
 		);
 		assert_eq!(wallet1_info.amount_immature, cm * reward + fee);
 
@@ -228,13 +228,10 @@ fn basic_transaction_api(test_dir: &'static str) -> Result<(), libwallet::Error>
 		let (wallet1_refreshed, wallet1_info) = api.retrieve_summary_info(m, true, 1)?;
 		debug!("Wallet 1 Info: {:?}", wallet1_info);
 		assert!(wallet1_refreshed);
-		assert_eq!(
-			wallet1_info.total,
-			amount * wallet1_info.last_confirmed_height - amount
-		);
+		assert_eq!(wallet1_info.total, amount * 46 - amount);
 		assert_eq!(
 			wallet1_info.amount_currently_spendable,
-			(wallet1_info.last_confirmed_height - cm - 1) * reward
+			(46 - cm - 1) * reward
 		);
 		Ok(())
 	})?;
@@ -268,7 +265,7 @@ fn basic_transaction_api(test_dir: &'static str) -> Result<(), libwallet::Error>
 			..Default::default()
 		};
 		let est = sender_api.init_send_tx(m, init_args)?;
-		assert_eq!(est.amount, 600_000_000_000);
+		assert_eq!(est.amount, 420_000_000_000);
 		assert_eq!(est.fee, 4_000_000);
 
 		let init_args = InitTxArgs {
@@ -282,7 +279,7 @@ fn basic_transaction_api(test_dir: &'static str) -> Result<(), libwallet::Error>
 			..Default::default()
 		};
 		let est = sender_api.init_send_tx(m, init_args)?;
-		assert_eq!(est.amount, 180_000_000_000);
+		assert_eq!(est.amount, 30_002_000_000);
 		assert_eq!(est.fee, 6_000_000);
 
 		Ok(())
@@ -323,10 +320,7 @@ fn basic_transaction_api(test_dir: &'static str) -> Result<(), libwallet::Error>
 		sender_api.post_tx(m, &stored_tx_slate, false)?;
 		let (_, wallet1_info) = sender_api.retrieve_summary_info(m, true, 1)?;
 		// should be mined now
-		assert_eq!(
-			wallet1_info.total,
-			amount * wallet1_info.last_confirmed_height - amount * 3
-		);
+		assert_eq!(wallet1_info.total, amount * 47 - amount * 3);
 		Ok(())
 	})?;
 
@@ -395,7 +389,7 @@ fn tx_rollback(test_dir: &'static str) -> Result<(), libwallet::Error> {
 	});
 
 	// few values to keep things shorter
-	let reward = core::consensus::REWARD;
+	let reward = core::consensus::REWARD_ADJUSTED;
 	let cm = global::coinbase_maturity(); // assume all testing precedes soft fork height
 									  // mine a few blocks
 	let _ = test_framework::award_blocks_to_wallet(&chain, wallet1.clone(), mask1, 5, false);
@@ -498,10 +492,7 @@ fn tx_rollback(test_dir: &'static str) -> Result<(), libwallet::Error> {
 		);
 		// check all eligible inputs should be now be spendable
 		println!("cm: {}", cm);
-		assert_eq!(
-			wallet1_info.amount_currently_spendable,
-			(wallet1_info.last_confirmed_height - cm) * reward
-		);
+		assert_eq!(wallet1_info.amount_currently_spendable, (38 - cm) * reward);
 		// can't roll back again
 		let res = api.cancel_tx(m, Some(tx.id), None);
 		assert!(res.is_err());

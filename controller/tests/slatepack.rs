@@ -121,7 +121,7 @@ fn slatepack_exchange_test_impl(
 	});
 
 	// few values to keep things shorter
-	let reward = core::consensus::REWARD;
+	let reward = core::consensus::REWARD_ADJUSTED;
 
 	// add some accounts
 	wallet::controller::owner_single_use(Some(wallet1.clone()), mask1, None, |api, m| {
@@ -201,7 +201,7 @@ fn slatepack_exchange_test_impl(
 		let (wallet1_refreshed, wallet1_info) = api.retrieve_summary_info(m, true, 1)?;
 		assert!(wallet1_refreshed);
 		assert_eq!(wallet1_info.last_confirmed_height, bh);
-		assert_eq!(wallet1_info.total, bh * reward);
+		assert_eq!(wallet1_info.total, 42 * reward);
 		// send to send
 		let args = InitTxArgs {
 			src_acct_name: Some("mining".to_owned()),
@@ -272,7 +272,7 @@ fn slatepack_exchange_test_impl(
 		let (wallet1_refreshed, wallet1_info) = api.retrieve_summary_info(m, true, 1)?;
 		assert!(wallet1_refreshed);
 		assert_eq!(wallet1_info.last_confirmed_height, bh);
-		assert_eq!(wallet1_info.total, bh * reward - reward * 2);
+		assert_eq!(wallet1_info.total, 46 * reward - reward * 2);
 		Ok(())
 	})?;
 
@@ -474,7 +474,7 @@ fn slatepack_api_impl(test_dir: &'static str) -> Result<(), libwallet::Error> {
 	});
 
 	// few values to keep things shorter
-	let reward = core::consensus::REWARD;
+	let reward = core::consensus::REWARD_ADJUSTED;
 
 	// Get some mining done
 	let bh = 6u64;

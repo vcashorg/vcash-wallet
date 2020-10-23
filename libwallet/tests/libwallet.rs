@@ -19,7 +19,7 @@ use grin_wallet_util::grin_keychain::{
 	BlindSum, BlindingFactor, ExtKeychain, ExtKeychainPath, Keychain, SwitchCommitmentType,
 };
 use grin_wallet_util::grin_util::secp;
-use grin_wallet_util::grin_util::secp::key::{PublicKey, SecretKey};
+use grin_wallet_util::grin_util::secp::key::{PublicKey, SecretKey, ZERO_KEY};
 use rand::thread_rng;
 
 fn kernel_sig_msg() -> secp::Message {
@@ -74,7 +74,7 @@ fn aggsig_sender_receiver_interaction() {
 
 		let blind = blinding_factor.secret_key(&keychain.secp()).unwrap();
 
-		s_cx = Context::new(&keychain.secp(), blind, &parent, false);
+		s_cx = Context::new(&keychain.secp(), blind, ZERO_KEY, &parent, false);
 		s_cx.get_public_keys(&keychain.secp())
 	};
 
@@ -88,7 +88,7 @@ fn aggsig_sender_receiver_interaction() {
 		// let blind = blind_sum.secret_key(&keychain.secp())?;
 		let blind = keychain.derive_key(0, &key_id, switch).unwrap();
 
-		rx_cx = Context::new(&keychain.secp(), blind, &parent, false);
+		rx_cx = Context::new(&keychain.secp(), blind, ZERO_KEY, &parent, false);
 		let (pub_excess, pub_nonce) = rx_cx.get_public_keys(&keychain.secp());
 		rx_cx.add_output(&key_id, &None, 0);
 
@@ -293,7 +293,7 @@ fn aggsig_sender_receiver_interaction_offset() {
 
 		let blind = blinding_factor.secret_key(&keychain.secp()).unwrap();
 
-		s_cx = Context::new(&keychain.secp(), blind, &parent, false);
+		s_cx = Context::new(&keychain.secp(), blind, ZERO_KEY, &parent, false);
 		s_cx.get_public_keys(&keychain.secp())
 	};
 
@@ -306,7 +306,7 @@ fn aggsig_sender_receiver_interaction_offset() {
 
 		let blind = keychain.derive_key(0, &key_id, switch).unwrap();
 
-		rx_cx = Context::new(&keychain.secp(), blind, &parent, false);
+		rx_cx = Context::new(&keychain.secp(), blind, ZERO_KEY, &parent, false);
 		let (pub_excess, pub_nonce) = rx_cx.get_public_keys(&keychain.secp());
 		rx_cx.add_output(&key_id, &None, 0);
 

@@ -100,7 +100,7 @@ fn updater_thread_test_impl(test_dir: &'static str) -> Result<(), libwallet::Err
 	thread::sleep(Duration::from_secs(10));
 
 	let messages = owner_api.get_updater_messages(1000)?;
-	assert_eq!(messages.len(), 32);
+	assert_eq!(messages.len(), 36);
 
 	owner_api.stop_updater()?;
 	stopper.store(false, Ordering::Relaxed);

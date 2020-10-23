@@ -825,6 +825,7 @@ mod test {
 
 		let tx1 = build::transaction(
 			KernelFeatures::Plain { fee: 0 },
+			None,
 			&[build::output(105, key_id1.clone())],
 			&keychain,
 			&builder,
@@ -832,6 +833,7 @@ mod test {
 		.unwrap();
 		let tx2 = build::transaction(
 			KernelFeatures::Plain { fee: 0 },
+			None,
 			&[build::input(105, key_id1.clone())],
 			&keychain,
 			&builder,
@@ -874,7 +876,7 @@ mod test {
 		};
 
 		let amount = 1_234_567_890_u64;
-		let msg = payment_proof_message(amount, &kernel_excess, address).unwrap();
+		let msg = payment_proof_message(None, amount, &kernel_excess, address).unwrap();
 		println!("payment proof message is (len {}): {:?}", msg.len(), msg);
 
 		let decoded = _decode_payment_proof_message(&msg).unwrap();
@@ -882,7 +884,8 @@ mod test {
 		assert_eq!(decoded.1, kernel_excess);
 		assert_eq!(decoded.2, address);
 
-		let sig = create_payment_proof_signature(amount, &kernel_excess, address, sec_key).unwrap();
+		let sig =
+			create_payment_proof_signature(None, amount, &kernel_excess, address, sec_key).unwrap();
 
 		assert!(address.verify(&msg, &sig).is_ok());
 	}

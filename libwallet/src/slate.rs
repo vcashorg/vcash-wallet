@@ -792,7 +792,7 @@ impl Slate {
 
 	/// return the final excess
 	pub fn calc_final_excess(&self, secp: &secp::Secp256k1) -> Result<Commitment, Error> {
-		let tx = self.tx_or_err()?.clone();
+		let tx = self.tx_or_err()?;
 		let kernel_offset = tx.offset.clone();
 		let overage = tx.fee() as i64;
 		let tx_excess = tx.sum_commitments(overage)?;
@@ -804,7 +804,7 @@ impl Slate {
 
 	/// return the final token excess
 	pub fn calc_token_final_excess(&self, secp: &secp::Secp256k1) -> Result<Commitment, Error> {
-		let tx = self.tx_or_err()?.clone();
+		let tx = self.tx_or_err()?;
 
 		let token_type = TokenKey::from_hex(self.token_type.clone().unwrap().as_str())?;
 
@@ -922,6 +922,7 @@ impl Slate {
 			final_tx.validate(Weighting::AsTransaction, verifier_cache)?;
 		}
 
+		self.tx = Some(final_tx);
 		Ok(())
 	}
 

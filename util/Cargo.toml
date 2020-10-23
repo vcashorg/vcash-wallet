@@ -35,20 +35,20 @@ sha3 = "0.8"
 # grin_store = { git = "https://github.com/vcashorg/vcash", tag = "v4.0.0" }
 
 # For bleeding edge
-#grin_core = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
-#grin_keychain = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
-#grin_chain = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
-#grin_util = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
-#grin_api = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
-#grin_store = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
+grin_core = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
+grin_keychain = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
+grin_chain = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
+grin_util = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
+grin_api = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
+grin_store = { git = "https://github.com/vcashorg/vcash", branch = "vcash" }
 
 # For local testing
-grin_core = { path = "../../vcash/core"}
-grin_keychain = { path = "../../vcash/keychain"}
-grin_chain = { path = "../../vcash/chain"}
-grin_util = { path = "../../vcash/util"}
-grin_api = { path = "../../vcash/api"}
-grin_store = { path = "../../vcash/store"}
+#grin_core = { path = "../../vcash/core"}
+#grin_keychain = { path = "../../vcash/keychain"}
+#grin_chain = { path = "../../vcash/chain"}
+#grin_util = { path = "../../vcash/util"}
+#grin_api = { path = "../../vcash/api"}
+#grin_store = { path = "../../vcash/store"}
 
 [dev-dependencies]
 pretty_assertions = "0.6"
